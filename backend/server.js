@@ -2,15 +2,15 @@ import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import multer from 'multer';
-import { createClient } from '@deepgram/sdk';
-import ffmpeg from 'ffmpeg-static';
-import ffprobe from 'ffprobe-static';
-import { exec } from 'child_process';
+// Import LiveTranscriptionEvents if needed for detailed events, otherwise just createClient
+import { createClient, LiveTranscriptionEvents } from '@deepgram/sdk'; 
+// Removed ffmpeg and ffprobe imports
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import sseExpress from 'sse-express';
 import { v4 as uuidv4 } from 'uuid';
+// Removed Readable stream import as createReadStream is sufficient
 
 // Helper to get __dirname in ES module scope
 const __filename = fileURLToPath(import.meta.url);
@@ -52,7 +52,8 @@ app.get('/progress/:clientId', sseExpress, (req, res) => {
   res.sse('connected', { message: 'Connected for progress updates' });
   req.on('close', () => {
     console.log(`Client ${clientId} disconnected.`);
-    delete sseConnections[clientId];
+    // Clean up any resources associated with this client if needed
+    delete sseConnections[clientId]; 
   });
 });
 
@@ -61,7 +62,6 @@ const sendProgress = (clientId, type, data) => {
   if (sseConnections[clientId]) {
     try {
         sseConnections[clientId].sse(type, data);
-        // Avoid logging potentially large transcript/summary data
         if (type !== 'partial_transcript' && type !== 'summary_result') { 
             const logData = { ...data };
             console.log(`Sent SSE [${type}] to ${clientId}:`, logData);
@@ -71,221 +71,163 @@ const sendProgress = (clientId, type, data) => {
          delete sseConnections[clientId];
     }
   } else {
-    // console.warn(`Cannot send SSE to disconnected client ${clientId}`);
+     // console.warn(`Cannot send SSE to disconnected client ${clientId}`);
   }
 };
 
-// Function to split media using ffmpeg
-const splitMediaIntoAudioChunks = (clientId, filePath, chunkSizeMB) => {
-  const approxChunkDurationSec = Math.max(10, Math.round((chunkSizeMB * 1024 * 1024) / 16000)); 
-  console.log(`[${clientId}] Target chunk size ${chunkSizeMB}MB -> Approx duration ${approxChunkDurationSec}s`);
-  return new Promise((resolve, reject) => {
-    const outputPattern = path.join(uploadsDir, `${clientId}_chunk_%03d.mp3`);
-    const command = `"${ffmpeg}" -i "${filePath}" -f segment -segment_time ${approxChunkDurationSec} -vn -acodec libmp3lame -ar 16000 -ac 1 "${outputPattern}"`;
-    console.log(`[${clientId}] Executing FFmpeg command: ${command}`);
-    sendProgress(clientId, 'status', { message: `Splitting file into ~${chunkSizeMB}MB audio chunks...` });
-    const ffmpegProcess = exec(command);
-    let stderrData = '';
-    ffmpegProcess.stderr.on('data', (data) => { stderrData += data.toString(); });
-    ffmpegProcess.on('close', (code) => {
-        console.warn(`[${clientId}] FFmpeg stderr output:\n${stderrData}`);
-        if (code !== 0) {
-            console.error(`[${clientId}] FFmpeg exited with code ${code}`);
-            sendProgress(clientId, 'error', { message: `Error splitting file (FFmpeg code ${code})` });
-            return reject(new Error(`Error splitting file (FFmpeg code ${code})`));
-        }
-        const chunks = fs.readdirSync(uploadsDir)
-                         .filter(file => file.startsWith(`${clientId}_chunk_`) && file.endsWith('.mp3'))
-                         .map(file => path.join(uploadsDir, file))
-                         .sort();
-        console.log(`[${clientId}] Found ${chunks.length} MP3 chunks.`);
-        sendProgress(clientId, 'status', { message: `Found ${chunks.length} audio chunks.` });
-        if (chunks.length === 0) {
-            const reason = stderrData.includes('Output file does not contain any stream') ? 'No audio stream found or processing error.' : 'Unknown FFmpeg issue.';
-            sendProgress(clientId, 'error', { message: `No audio chunks were created. ${reason}` });
-            return reject(new Error(`No audio chunks were created. ${reason}`));
-        }
-        resolve(chunks);
-    });
-    ffmpegProcess.on('error', (err) => {
-        console.error(`[${clientId}] FFmpeg execution error: ${err.message}`);
-        sendProgress(clientId, 'error', { message: `Error executing FFmpeg: ${err.message}` });
-        reject(new Error(`Error executing FFmpeg: ${err.message}`));
-    });
-  });
-};
+// *** REMOVED splitMediaIntoAudioChunks function ***
 
-// Function to transcribe a single chunk using Pre-recorded API
-// Now accepts 'diarizeEnabled', 'summarizeEnabled', and 'model' flags
-const transcribeChunkPrerecorded = async (clientId, chunkPath, diarizeEnabled, summarizeEnabled, model) => {
-    const chunkName = path.basename(chunkPath);
-    console.log(`[${clientId}] Transcribing chunk: ${chunkName} (Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model})`);
-    
-    const transcriptionOptions = {
-        punctuate: true,
-        smart_format: true,
-        model: model || 'nova-2',
-    };
-    if (diarizeEnabled) {
-        transcriptionOptions.diarize = true;
-    }
-    // Add summarize option if enabled
-    if (summarizeEnabled) {
-        transcriptionOptions.summarize = 'v2'; 
-    }
+// *** REVISED: Function to stream the entire audio file to Deepgram Live API ***
+const streamFileToDeepgram = (clientId, filePath, diarizeEnabled, summarizeEnabled, model) => {
+    return new Promise((resolve, reject) => {
+        const fileName = path.basename(filePath);
+        console.log(`[${clientId}] Attempting live transcription for file: ${fileName} (Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model})`);
+        let deepgramLive = null;
+        let fileStream = null;
+        let connectionClosed = false;
+        let resolved = false; 
 
-    try {
-        const audioBuffer = fs.readFileSync(chunkPath);
-        // Make the API call
-        const { result, error: dgError } = await deepgramClient.listen.prerecorded.transcribeFile(
-            audioBuffer,
-            transcriptionOptions
-        );
-
-        if (dgError) {
-            console.error(`[${clientId}] Deepgram API error for chunk ${chunkName} (Model: ${model}):`, dgError);
-             if (dgError.status === 400 && dgError.message.includes('model')) {
-                 sendProgress(clientId, 'error', { message: `Model '${model}' may not be available or compatible.` });
-             } else if (dgError.status === 400 && dgError.message.includes('diarize')) {
-                  sendProgress(clientId, 'error', { message: `Diarization may not be supported by model '${model}'.` });
-             } else if (dgError.status === 400 && dgError.message.includes('summarize')) {
-                  sendProgress(clientId, 'error', { message: `Summarization may not be supported by model '${model}' or your plan.` });
-             }
-            throw dgError;
-        }
-
-        // --- Process Results ---
-        let formattedTranscript = '';
-        let summary = null; // Variable to hold summary if found
-
-        // Check for summary first (as it applies to the whole request)
-        if (summarizeEnabled && result?.results?.summary?.short) {
-             summary = result.results.summary.short;
-             console.log(`[${clientId}] Summary received for chunk ${chunkName}.`);
-             // Send summary via SSE immediately
-             sendProgress(clientId, 'summary_result', { summary: summary });
-        }
-
-        // Process transcript/diarization
-        if (diarizeEnabled && result?.results?.channels?.[0]?.alternatives?.[0]?.paragraphs?.paragraphs) {
-            console.log(`[${clientId}] Diarization successful for chunk ${chunkName}.`);
-            const paragraphs = result.results.channels[0].alternatives[0].paragraphs.paragraphs;
-            paragraphs.forEach(paragraph => {
-                const speakerLabel = paragraph.speaker !== null && paragraph.speaker !== undefined 
-                                     ? `Speaker ${paragraph.speaker}: ` : ''; 
-                formattedTranscript += speakerLabel + paragraph.text + '\n\n';
-            });
-        } else {
-            if (diarizeEnabled) {
-                 console.warn(`[${clientId}] Diarization enabled but no paragraphs found for chunk ${chunkName}.`);
+        const cleanup = (error) => {
+            if (resolved) return;
+            resolved = true;
+            connectionClosed = true; 
+            if (fileStream && !fileStream.destroyed) {
+                fileStream.destroy();
             }
-            formattedTranscript = result?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '';
-            formattedTranscript += ' '; 
-        }
-        
-        console.log(`[${clientId}] Transcription processed for chunk ${chunkName}.`);
+            if (deepgramLive && deepgramLive.getReadyState() < 2) {
+                 console.log(`[${clientId}] Cleaning up: Forcing close Deepgram connection for ${fileName}`);
+                 try { deepgramLive.finish(); } catch (e) { console.error("Error finishing deepgram connection:", e)}
+            }
+             if (error) {
+                 console.error(`[${clientId}] Rejecting promise for ${fileName} due to error.`);
+                 reject(error);
+             } else {
+                 console.log(`[${clientId}] Resolving promise for ${fileName}.`);
+                 resolve(); // Resolve without value, results sent via SSE
+             }
+        };
 
-        // Send transcript part via SSE
-        if (formattedTranscript.trim().length > 0) {
-             sendProgress(clientId, 'partial_transcript', { transcript: formattedTranscript });
-        }
-        
-        // Return value not strictly needed, but return summary status for potential future logic
-        return { transcriptProcessed: true, summaryReceived: !!summary }; 
+        try {
+            // Construct minimal options for testing connection
+            const liveOptions = {
+                punctuate: true,
+                model: model || 'nova-2',
+                // Temporarily removed: smart_format, interim_results
+            };
+            // Temporarily removed conditional diarize/summarize for testing
+            // if (diarizeEnabled) {
+            //     liveOptions.diarize = true;
+            // }
+            // if (summarizeEnabled) {
+            //     liveOptions.summarize = 'v2';
+            // }
+            console.log(`[${clientId}] Attempting Deepgram connection with minimal options:`, liveOptions);
+            deepgramLive = deepgramClient.listen.live(liveOptions);
 
-    } catch (err) {
-        console.error(`[${clientId}] Failed to transcribe chunk ${chunkName}:`, err);
-        return { transcriptProcessed: false, summaryReceived: false }; // Indicate failure
-    }
-};
+            deepgramLive.on(LiveTranscriptionEvents.Open, () => {
+                if (connectionClosed) return; 
+                console.log(`[${clientId}] Deepgram connection opened for ${fileName}.`);
+                
+                fileStream = fs.createReadStream(filePath);
 
+                fileStream.on('data', (data) => {
+                    if (connectionClosed) return;
+                    if (deepgramLive && deepgramLive.getReadyState() === 1 /* OPEN */) {
+                        deepgramLive.send(data);
+                    } else {
+                         console.warn(`[${clientId}] Deepgram connection not open while sending data for ${fileName}. State: ${deepgramLive?.getReadyState()}`);
+                         cleanup(new Error("Deepgram connection closed prematurely during data send."));
+                    }
+                });
 
-// Main transcription processing function (accepts all flags)
-const processTranscription = async (clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMB) => {
-    let duration = Infinity;
-    let chunkPaths = [];
-    const effectiveChunkSizeMB = chunkSizeMB && chunkSizeMB > 0 ? chunkSizeMB : 10; 
-    const DIRECT_PROCESSING_THRESHOLD_SEC = 30; 
+                fileStream.on('end', () => {
+                    if (connectionClosed) return;
+                    console.log(`[${clientId}] Finished reading ${fileName}. Sending finish signal.`);
+                    if (deepgramLive && deepgramLive.getReadyState() === 1) {
+                        deepgramLive.finish(); // Signal end of audio stream
+                    } else {
+                         console.warn(`[${clientId}] Cannot send finish signal, connection not open for ${fileName}.`);
+                    }
+                });
 
-    try {
-        sendProgress(clientId, 'status', { message: `Processing: ${originalName} (Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, Chunk: ${effectiveChunkSizeMB}MB)` });
-
-        // 1. Check duration
-         try {
-            const ffprobePath = ffprobe.path;
-            const durationCommand = `"${ffprobePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`;
-            const { stdout } = await new Promise((resolve, reject) => {
-                exec(durationCommand, (error, stdout, stderr) => {
-                    if (error) reject(stderr || error); else resolve({ stdout });
+                fileStream.on('error', (err) => {
+                    if (connectionClosed) return;
+                    console.error(`[${clientId}] Error reading file ${fileName}:`, err);
+                    cleanup(err);
                 });
             });
-            duration = parseFloat(stdout);
-            console.log(`[${clientId}] File duration: ${duration} seconds`);
-            sendProgress(clientId, 'status', { message: `File duration: ${Math.round(duration)}s` });
-        } catch (err) {
-            console.error(`[${clientId}] Error getting file duration:`, err);
-            sendProgress(clientId, 'status', { message: 'Could not determine duration, assuming large file.' });
-            duration = Infinity;
-        }
 
-        // 2. Decide processing strategy
-        if (duration > DIRECT_PROCESSING_THRESHOLD_SEC) {
-            chunkPaths = await splitMediaIntoAudioChunks(clientId, filePath, effectiveChunkSizeMB); 
-            const totalChunks = chunkPaths.length;
-            let firstSummaryReceived = false; // Flag to track if summary was received
-
-            for (let i = 0; i < totalChunks; i++) {
-                const chunkPath = chunkPaths[i];
-                const progressMsg = `Transcribing chunk ${i + 1}/${totalChunks}...`; 
-                console.log(`[${clientId}] ${progressMsg}`);
-                sendProgress(clientId, 'status', { message: progressMsg, model: model });
-                
-                try {
-                    // Pass all flags; check if summary was received (only expected once)
-                    const result = await transcribeChunkPrerecorded(clientId, chunkPath, diarizeEnabled, summarizeEnabled && !firstSummaryReceived, model); 
-                    if (result?.summaryReceived) {
-                        firstSummaryReceived = true; // Stop requesting summary for subsequent chunks
-                    }
-                    console.log(`[${clientId}] Finished processing chunk ${i + 1}.`);
-                } catch (err) { // Catch errors propagated from transcribeChunkPrerecorded
-                    sendProgress(clientId, 'warning', { message: `Error processing chunk ${i + 1}. Skipping.` });
-                } finally {
-                   if (fs.existsSync(chunkPath)) { fs.unlinkSync(chunkPath); }
+            deepgramLive.on(LiveTranscriptionEvents.Transcript, (data) => {
+                if (connectionClosed) return;
+                const transcript = data.channel?.alternatives?.[0]?.transcript;
+                if (transcript && transcript.trim().length > 0) {
+                    sendProgress(clientId, 'partial_transcript', { transcript: transcript + ' ' });
                 }
-            }
-            console.log(`[${clientId}] Finished processing all chunks.`);
-            sendProgress(clientId, 'status', { message: 'All chunks processed.' });
+            });
 
-        } else {
-             sendProgress(clientId, 'status', { message: 'Transcribing file directly (Pre-recorded)...', model: model });
-             try {
-                 // Pass all flags
-                 await transcribeChunkPrerecorded(clientId, filePath, diarizeEnabled, summarizeEnabled, model); 
-                 console.log(`[${clientId}] Finished transcribing file directly.`);
-                 sendProgress(clientId, 'status', { message: 'Processing complete.' });
-             } catch (err) {
-                  // Error already logged and potentially sent via SSE in transcribeChunkPrerecorded
-                  // sendProgress(clientId, 'error', { message: `Transcription failed: ${err.message || 'Unknown error'}` });
-             }
+             // Handle summary if provided in the results (might come with Transcript or Metadata)
+             // NOTE: Live API might send summary differently than Pre-recorded. Check Deepgram docs if this doesn't work.
+             // Let's check both Transcript and Metadata events for summary.
+             const handleSummary = (summaryData) => {
+                 if (summarizeEnabled && summaryData?.summary?.short) {
+                     const summary = summaryData.summary.short;
+                     console.log(`[${clientId}] Summary received.`);
+                     sendProgress(clientId, 'summary_result', { summary: summary });
+                     // Potentially disable requesting summary further if needed, though live might handle this.
+                 }
+             };
+             deepgramLive.on(LiveTranscriptionEvents.Transcript, (data) => handleSummary(data));
+             deepgramLive.on(LiveTranscriptionEvents.Metadata, (data) => handleSummary(data));
+
+
+            deepgramLive.on(LiveTranscriptionEvents.Close, (event) => {
+                console.log(`[${clientId}] Deepgram connection closed for ${fileName}. Code: ${event.code}, Reason: ${event.reason}`);
+                cleanup(null); // Resolve normally on close
+            });
+
+            deepgramLive.on(LiveTranscriptionEvents.Error, (err) => {
+                console.error(`[${clientId}] Deepgram connection error for ${fileName}:`, err);
+                cleanup(err); 
+            });
+
+             deepgramLive.on(LiveTranscriptionEvents.Warning, (warn) => {
+                 console.warn(`[${clientId}] Deepgram warning for ${fileName}:`, warn);
+             });
+
+        } catch (initError) {
+             console.error(`[${clientId}] Failed to initialize Deepgram connection for ${fileName}:`, initError);
+             cleanup(initError);
         }
+    });
+};
+
+
+// *** REVISED: Main transcription processing function (No chunking) ***
+const processTranscription = async (clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model) => {
+    
+    try {
+        // Include all options in the initial status message
+        sendProgress(clientId, 'status', { message: `Processing: ${originalName} (Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model})` });
+
+        // Directly stream the entire file
+        sendProgress(clientId, 'status', { message: 'Streaming file to Deepgram...', model: model });
+        await streamFileToDeepgram(clientId, filePath, diarizeEnabled, summarizeEnabled, model);
+        console.log(`[${clientId}] Finished streaming file.`);
+        sendProgress(clientId, 'status', { message: 'Processing complete.' });
 
         sendProgress(clientId, 'done', { message: 'Transcription process finished.' });
 
     } catch (error) {
+        // Error logging and sending handled within streamFileToDeepgram or here if init fails
         console.error(`[${clientId}] Top-level transcription processing error:`, error);
+        // Ensure an error message is sent if not already handled by streamFileToDeepgram's cleanup
         sendProgress(clientId, 'error', { message: `Processing failed: ${error.message || 'Unknown error'}` });
     } finally {
-        // Clean up original file only if it was chunked
-        if (duration > DIRECT_PROCESSING_THRESHOLD_SEC && fs.existsSync(filePath)) {
+        // Clean up the original uploaded file
+        if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
             console.log(`[${clientId}] Cleaned up original file: ${filePath}`);
-        } else if (duration <= DIRECT_PROCESSING_THRESHOLD_SEC && fs.existsSync(filePath)) {
-             fs.unlinkSync(filePath);
-             console.log(`[${clientId}] Cleaned up original file (processed directly): ${filePath}`);
         }
-        chunkPaths.forEach(chunkPath => {
-            if (fs.existsSync(chunkPath)) { fs.unlinkSync(chunkPath); }
-        });
         console.log(`[${clientId}] Final cleanup complete.`);
         
         // Close SSE connection
@@ -301,7 +243,7 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
     }
 };
 
-// Modified Transcription endpoint to receive all options
+// Modified Transcription endpoint (Removed chunkSizeMB)
 app.post('/transcribe', upload.single('audio'), (req, res) => {
    if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded.' });
@@ -311,14 +253,14 @@ app.post('/transcribe', upload.single('audio'), (req, res) => {
   const originalName = req.file.originalname;
   
   const diarizeEnabled = req.body.enableDiarization === 'true'; 
-  const summarizeEnabled = req.body.enableSummarization === 'true'; // Get summarize flag
+  const summarizeEnabled = req.body.enableSummarization === 'true'; 
   const model = req.body.model || 'nova-2'; 
-  const chunkSizeMB = parseInt(req.body.chunkSizeMB, 10) || 10; 
+  // Removed chunkSizeMB
 
-  console.log(`[${clientId}] Received file: ${originalName}, Path: ${filePath}, Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, ChunkMB: ${chunkSizeMB}. Starting async processing.`);
+  console.log(`[${clientId}] Received file: ${originalName}, Path: ${filePath}, Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}. Starting async processing.`);
   
-  // Pass all options to main processing function
-  processTranscription(clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMB); 
+  // Pass relevant options to main processing function
+  processTranscription(clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model); 
   
   res.json({ clientId }); 
 });

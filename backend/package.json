@@ -17,8 +17,6 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
-    "ffmpeg-static": "^5.2.0",
-    "ffprobe-static": "^3.1.0",
     "multer": "^1.4.5-lts.2",
     "sse-express": "^1.0.2",
     "uuid": "^11.1.0"
