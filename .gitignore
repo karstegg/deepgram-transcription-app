@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment variables
+.env
+**/.env
+GITHUB PAT.txt # Exclude GitHub PAT file
+
+# Uploads and temporary files
+uploads/
+**/uploads/
+*.log
+*.tmp
+*.swp
+
+# Build output (if applicable)
+/frontend/build/
+/backend/dist/ # If using TypeScript build
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE specific files
+.vscode/
+.idea/

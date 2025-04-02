@@ -1,0 +1,11 @@
+HR Employee Recruitment Database and Tracker. Use teh attached file for the database. Allow creation and deletion of positions. Weekly report. Status types include Campaign start/open date, Job profile completed, Advert approved, Advert published, Shortlist approved, Interviews booked, Recommendation, Offer, Offer feedback(accepted/rejected/negotiated), Start month, appointment date
+
+Here is an extract of the CSV to be used to setup teh database:
+Position Title;Department;Location;Organization;Grade;Position Number;FTE;Head Count;Occupancy – Full Time;Occupancy – Fixed Term;Total Occupancy;Balance Recruit;Cost Center;Cost Type
+Administrator Rail and Port;BR Inland Port Logistics;Black Rock;BR Saldanha Port Logistics;B5;412257;1;1;1;0;1;0;"80;40;70;700;;;56691; ";Working Cost
+Engineer Services and Planning;BR Engineering;Black Rock;BR Engineer Services - Black Rock;D3;419278;1;1;1;0;1;0;"80;40;70;700;;;52205; ";Working Cost
+Accountant;BR Finance;Black Rock;BR Financial Accounts;D2;357413;0;0;1;0;1;-1;"80;40;70;700;;;55570; ";Working Cost
+Administrator Accounts Payable;BR Finance;Black Rock;BR Financial Accounts;C1;392256;1;1;1;0;1;0;"80;40;70;700;;;55570; ";Working Cost
+Administrator Corporate Social Investment and Compliance;BR Finance;Black Rock;BR Socio Economic Development;C1;330097;0;0;1;0;1;-1;"80;40;70;000;;;55590; ";Working Cost
+Administrator Distribution;BR Ore Processing and Dispatch;Black Rock - Nchwaning 2;BR Ore Control - NCH2;B4;460798;1;1;1;0;1;0;"80;51;40;000;;;26671; ";Working Cost
+Administrator Documentation;BR SHERQ;Black Rock;BR Risk and Quality;C1;194127;1;1;1;0;1;0;"80;40;70;700;;;57772; ";Working Cost
