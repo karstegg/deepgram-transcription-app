@@ -3,7 +3,6 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import multer from 'multer';
 import { createClient } from '@deepgram/sdk'; 
-// Re-add ffmpeg and ffprobe imports
 import ffmpeg from 'ffmpeg-static';
 import ffprobe from 'ffprobe-static'; 
 import { exec } from 'child_process';
@@ -12,6 +11,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import sseExpress from 'sse-express';
 import { v4 as uuidv4 } from 'uuid';
+// Import Google AI library
+import { GoogleGenerativeAI } from "@google/generative-ai"; 
 
 // Helper
 const __filename = fileURLToPath(import.meta.url);
@@ -39,8 +40,15 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
 }
 
-// Deepgram client
+// Initialize SDKs
 const deepgramClient = createClient(process.env.DEEPGRAM_API_KEY);
+// Initialize Google AI only if key exists
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+if (!genAI) {
+    console.warn("GEMINI_API_KEY not found in .env. Summarization feature will be disabled.");
+}
+// Using the specific model identifier requested by the user
+const geminiModel = genAI ? genAI.getGenerativeModel({ model: "gemini-2.5-pro-exp-03-25" }) : null; 
 
 // SSE Store & Helper
 const sseConnections = {};
@@ -69,8 +77,9 @@ const sendProgress = (clientId, type, data) => {
   }
 };
 
-// Function to split media using ffmpeg with better size control
+// Function to split media using ffmpeg
 const splitMediaIntoAudioChunks = (clientId, filePath, targetChunkSizeMB = 10) => {
+  // ... (Keep this function as is) ...
   return new Promise(async (resolve, reject) => { 
     const targetChunkSizeBytes = targetChunkSizeMB * 1024 * 1024;
     let segmentDurationSec = 600; 
@@ -153,9 +162,10 @@ const splitMediaIntoAudioChunks = (clientId, filePath, targetChunkSizeMB = 10) =
 };
 
 // Function to transcribe a single chunk using Pre-recorded API
-const transcribeChunkPrerecorded = async (clientId, chunkPath, diarizeEnabled, summarizeEnabled, model) => {
+// Removed summarizeEnabled flag from options sent to Deepgram
+const transcribeChunkPrerecorded = async (clientId, chunkPath, diarizeEnabled, model) => {
     const chunkName = path.basename(chunkPath);
-    console.log(`[${clientId}] Transcribing chunk: ${chunkName} (Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model})`);
+    console.log(`[${clientId}] Transcribing chunk: ${chunkName} (Diarize: ${diarizeEnabled}, Model: ${model})`);
     
     const transcriptionOptions = {
         punctuate: true,
@@ -165,9 +175,7 @@ const transcribeChunkPrerecorded = async (clientId, chunkPath, diarizeEnabled, s
     if (diarizeEnabled) {
         transcriptionOptions.diarize = true;
     }
-    if (summarizeEnabled) {
-        transcriptionOptions.summarize = 'v2'; 
-    }
+    // Removed summarize option - will call Gemini separately
 
     try {
         const audioBuffer = fs.readFileSync(chunkPath);
@@ -182,56 +190,45 @@ const transcribeChunkPrerecorded = async (clientId, chunkPath, diarizeEnabled, s
                  sendProgress(clientId, 'error', { message: `Model '${model}' may not be available or compatible.` });
              } else if (dgError.status === 400 && dgError.message?.includes('diarize')) {
                   sendProgress(clientId, 'error', { message: `Diarization may not be supported by model '${model}'.` });
-             } else if (dgError.status === 400 && dgError.message?.includes('summarize')) {
-                  sendProgress(clientId, 'error', { message: `Summarization may not be supported by model '${model}' or your plan.` });
              }
             throw dgError;
         }
 
         let formattedTranscript = '';
-        let summary = null; 
+        // Use plain transcript for accumulation, formatting happens before sending
+        let plainTranscript = result?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '';
 
-        if (summarizeEnabled && result?.results?.summary?.short) {
-             summary = result.results.summary.short;
-             console.log(`[${clientId}] Summary received for chunk ${chunkName}.`);
-             sendProgress(clientId, 'summary_result', { summary: summary });
-        }
-
-        // *** FIXED DIARIZATION PARSING ***
         if (diarizeEnabled && result?.results?.channels?.[0]?.alternatives?.[0]?.paragraphs?.paragraphs) {
             console.log(`[${clientId}] Diarization successful for chunk ${chunkName}. Formatting output.`);
             const paragraphs = result.results.channels[0].alternatives[0].paragraphs.paragraphs;
+            let currentChunkFormatted = '';
             paragraphs.forEach(paragraph => {
                 const speakerLabel = paragraph.speaker !== null && paragraph.speaker !== undefined 
-                                     ? `Speaker ${paragraph.speaker}: ` 
-                                     : '';
-                // *** CORRECTED TEXT EXTRACTION ***
-                // Join the 'text' from each sentence within the paragraph
+                                     ? `Speaker ${paragraph.speaker}: ` : ''; 
                 const paragraphText = paragraph.sentences?.map(sentence => sentence.text).join(' ') ?? ''; 
-                formattedTranscript += speakerLabel + paragraphText + '\n\n'; 
+                currentChunkFormatted += speakerLabel + paragraphText + '\n\n'; 
             });
+            formattedTranscript = currentChunkFormatted; // Use the formatted version for sending
         } else {
             if (diarizeEnabled) {
                  console.warn(`[${clientId}] Diarization enabled but no paragraphs found for chunk ${chunkName}.`);
             }
-            // Fallback to plain transcript
-            formattedTranscript = result?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '';
-            formattedTranscript += ' '; // Add space between non-diarized chunks
+            formattedTranscript = plainTranscript + ' '; // Use plain + space for sending non-diarized
         }
-        // *** END FIX ***
         
         console.log(`[${clientId}] Transcription processed for chunk ${chunkName}.`);
 
+        // Send formatted transcript part via SSE
         if (formattedTranscript.trim().length > 0) {
              sendProgress(clientId, 'partial_transcript', { transcript: formattedTranscript });
         }
         
-        // Return status object
-        return { transcriptProcessed: true, summaryReceived: !!summary }; 
+        // Return the plain transcript for accumulation
+        return plainTranscript; 
 
     } catch (err) {
         console.error(`[${clientId}] Failed to transcribe chunk ${chunkName}:`, err);
-        return { transcriptProcessed: false, summaryReceived: false }; 
+        return null; // Indicate failure
     }
 };
 
@@ -242,6 +239,7 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
     const DIRECT_PROCESSING_THRESHOLD_SEC = 30; 
     let duration = Infinity;
     let chunkPaths = [];
+    let accumulatedTranscript = ''; // Accumulate plain transcript
 
     try {
         sendProgress(clientId, 'status', { message: `Processing: ${originalName} (Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, Chunk Target: ${effectiveChunkSizeMB}MB)` });
@@ -264,12 +262,11 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
             duration = Infinity; 
         }
 
-        // 2. Decide processing strategy
+        // 2. Decide processing strategy & Transcribe
         if (duration > DIRECT_PROCESSING_THRESHOLD_SEC) {
             chunkPaths = await splitMediaIntoAudioChunks(clientId, filePath, effectiveChunkSizeMB); 
             const totalChunks = chunkPaths.length;
-            let firstSummaryReceived = false; 
-
+            
             for (let i = 0; i < totalChunks; i++) {
                 const chunkPath = chunkPaths[i];
                 const progressMsg = `Transcribing chunk ${i + 1}/${totalChunks}...`; 
@@ -277,9 +274,10 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
                 sendProgress(clientId, 'status', { message: progressMsg, model: model });
                 
                 try {
-                    const result = await transcribeChunkPrerecorded(clientId, chunkPath, diarizeEnabled, summarizeEnabled && !firstSummaryReceived, model); 
-                    if (result?.summaryReceived) {
-                        firstSummaryReceived = true; 
+                    // Pass false for summarize flag to Deepgram, accumulate plain text
+                    const chunkTranscript = await transcribeChunkPrerecorded(clientId, chunkPath, diarizeEnabled, false, model); 
+                    if (chunkTranscript !== null) {
+                        accumulatedTranscript += chunkTranscript + ' '; // Accumulate plain text
                     }
                     console.log(`[${clientId}] Finished processing chunk ${i + 1}.`);
                 } catch (err) { 
@@ -288,19 +286,47 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
                    if (fs.existsSync(chunkPath)) { fs.unlinkSync(chunkPath); }
                 }
             }
-            console.log(`[${clientId}] Finished processing all chunks.`);
+            console.log(`[${clientId}] Finished transcribing all chunks.`);
             sendProgress(clientId, 'status', { message: 'All chunks processed.' });
 
         } else {
              sendProgress(clientId, 'status', { message: 'Transcribing file directly (Pre-recorded)...', model: model });
              try {
-                 await transcribeChunkPrerecorded(clientId, filePath, diarizeEnabled, summarizeEnabled, model); 
+                 // Pass false for summarize flag to Deepgram
+                 const transcript = await transcribeChunkPrerecorded(clientId, filePath, diarizeEnabled, false, model); 
+                 if (transcript !== null) {
+                     accumulatedTranscript = transcript; // Assign directly
+                 }
                  console.log(`[${clientId}] Finished transcribing file directly.`);
                  sendProgress(clientId, 'status', { message: 'Processing complete.' });
              } catch (err) {
                   // Error handled within transcribeChunkPrerecorded
              }
         }
+
+        // 3. Summarize using Gemini if enabled and transcript exists
+        if (summarizeEnabled && accumulatedTranscript.trim().length > 0 && geminiModel) {
+            sendProgress(clientId, 'status', { message: 'Generating summary with Gemini...' });
+            console.log(`[${clientId}] Sending transcript (length: ${accumulatedTranscript.length}) to Gemini for summarization...`);
+            try {
+                const prompt = `Summarize the following transcript concisely:\n\n---\n${accumulatedTranscript.trim()}\n---`;
+                // Add safety settings if needed
+                // const safetySettings = [ ... ]; 
+                const result = await geminiModel.generateContent(prompt /*, safetySettings */);
+                const response = result.response;
+                const summaryText = response.text();
+                console.log(`[${clientId}] Gemini summary received.`);
+                sendProgress(clientId, 'summary_result', { summary: summaryText });
+            } catch (geminiError) {
+                 console.error(`[${clientId}] Gemini API error:`, geminiError);
+                 sendProgress(clientId, 'error', { message: `Failed to generate summary: ${geminiError.message || 'Unknown Gemini error'}` });
+            }
+        } else if (summarizeEnabled && !geminiModel) {
+             sendProgress(clientId, 'warning', { message: 'Summarization skipped: Gemini API key not configured.' });
+        } else if (summarizeEnabled) {
+             sendProgress(clientId, 'warning', { message: 'Summarization skipped: No transcript generated.' });
+        }
+
 
         sendProgress(clientId, 'done', { message: 'Transcription process finished.' });
 
@@ -313,10 +339,9 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
             fs.unlinkSync(filePath);
             console.log(`[${clientId}] Cleaned up original file (chunked): ${filePath}`);
         } else if (duration <= DIRECT_PROCESSING_THRESHOLD_SEC && fs.existsSync(filePath)) {
-             fs.unlinkSync(filePath); // Clean up if processed directly
+             fs.unlinkSync(filePath); 
              console.log(`[${clientId}] Cleaned up original file (direct): ${filePath}`);
         }
-        // Ensure all chunk paths are cleaned up
         chunkPaths.forEach(chunkPath => {
             if (fs.existsSync(chunkPath)) { fs.unlinkSync(chunkPath); }
         });
@@ -335,7 +360,7 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
     }
 };
 
-// Modified Transcription endpoint to receive chunk size
+// Modified Transcription endpoint
 app.post('/transcribe', upload.single('audio'), (req, res) => {
    if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded.' });
