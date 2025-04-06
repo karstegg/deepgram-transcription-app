@@ -11,9 +11,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import sseExpress from 'sse-express';
 import { v4 as uuidv4 } from 'uuid';
-// Import Google AI library and helpers
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai"; 
-// Import mime-types helper
 import mime from 'mime-types'; 
 
 // Helper
@@ -41,7 +39,6 @@ if (!genAI) {
     console.warn("GEMINI_API_KEY not found. Gemini features disabled."); 
 } else {
     try {
-        // Use the correct experimental model name requested by user
         geminiModel = genAI.getGenerativeModel({ model: "gemini-2.5-pro-exp-03-25" }); 
         console.log("Gemini model initialized:", "gemini-2.5-pro-exp-03-25");
     } catch (initError) {
@@ -219,12 +216,11 @@ const transcribeWithGemini = async (clientId, filePath, originalName, diarizeEna
         console.log(`[${clientId}] Sending request to Gemini model ${modelIdentifier}...`);
         
         const result = await geminiModel.generateContent({ contents, safetySettings });
-        // *** ADDED LOGGING FOR RAW RESULT ***
         console.log(`[${clientId}] Raw Gemini Result:`, JSON.stringify(result, null, 2)); 
-        const response = result.response;
-        // Check if response or text() method exists before calling
-        const responseText = response && typeof response.text === 'function' ? response.text() : ''; 
-        console.log(`[${clientId}] Gemini response received (text extracted).`);
+        
+        const response = result?.response;
+        const responseText = response?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''; 
+        console.log(`[${clientId}] Gemini response received. Extracted text length: ${responseText.length}`);
 
         // 6. Parse response and send via SSE
         let transcript = responseText;
@@ -237,14 +233,17 @@ const transcribeWithGemini = async (clientId, filePath, originalName, diarizeEna
                 transcript = responseText.substring(0, summaryIndex).trim(); 
                 console.log(`[${clientId}] Extracted summary from Gemini response.`);
                 sendProgress(clientId, 'summary_result', { summary: summary });
-            } else { console.warn(`[${clientId}] Could not extract summary from Gemini response.`); }
+            } else { console.warn(`[${clientId}] Could not extract summary marker from Gemini response.`); }
         }
-        if (transcript && transcript.trim().length > 0) { // Check transcript itself
+        
+        if (transcript && transcript.trim().length > 0) { 
              sendProgress(clientId, 'partial_transcript', { transcript: transcript }); 
+             console.log(`[${clientId}] Sent transcript part via SSE.`);
         } else {
-             console.warn(`[${clientId}] No transcript text found in Gemini response.`);
-             // Optionally send an empty transcript or specific message?
-             // sendProgress(clientId, 'partial_transcript', { transcript: '' }); 
+             console.warn(`[${clientId}] No transcript text found in Gemini response to send.`);
+             if (!summarizeEnabled || !summary) { 
+                 throw new Error("Gemini response did not contain valid transcript text.");
+             }
         }
 
     } catch (err) {
@@ -254,8 +253,7 @@ const transcribeWithGemini = async (clientId, filePath, originalName, diarizeEna
         } else if (err.message?.includes('RESOURCE_EXHAUSTED') || err.message?.includes('quota')) {
              sendProgress(clientId, 'error', { message: `Gemini API quota exceeded. Please check your usage limits.` });
         } else if (err.message?.includes('Unsupported MIME type') || err.message?.includes('Could not determine a supported MIME type')) { 
-             // Get mimeType from the outer scope for the error message
-             const fileExt = path.extname(fileName).toLowerCase();
+             const fileExt = path.extname(originalName).toLowerCase();
              let mimeType = ''; 
              if (fileExt === '.mp3') mimeType = 'audio/mp3'; else if (fileExt === '.wav') mimeType = 'audio/wav'; else if (fileExt === '.m4a') mimeType = 'audio/m4a'; else if (fileExt === '.aac') mimeType = 'audio/aac'; else if (fileExt === '.ogg') mimeType = 'audio/ogg'; else if (fileExt === '.flac') mimeType = 'audio/flac'; else if (fileExt === '.mp4') mimeType = 'video/mp4'; else { const detectedMimeType = mime.lookup(originalName); mimeType = detectedMimeType || 'application/octet-stream'; }
              sendProgress(clientId, 'error', { message: `Gemini processing failed: Unsupported file type (${mimeType}).` });
@@ -335,9 +333,13 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
                 try {
                     const prompt = `Summarize the following transcript concisely:\n\n---\n${accumulatedTranscript.trim()}\n---`;
                     const safetySettings = [ { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE } ];
-                    const result = await geminiModel.generateContent({prompt, safetySettings}); 
+                    
+                    // *** CORRECTED Gemini API call structure for text-only input ***
+                    const result = await geminiModel.generateContent(prompt, {safetySettings}); // Pass prompt string directly
+                    
                     const response = result.response;
-                    const summaryText = response.text();
+                    // *** CORRECTED RESPONSE PARSING for summary call ***
+                    const summaryText = response?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''; 
                     console.log(`[${clientId}] Gemini summary received.`);
                     sendProgress(clientId, 'summary_result', { summary: summaryText });
                 } catch (geminiError) {
@@ -352,7 +354,10 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
 
     } catch (error) {
         console.error(`[${clientId}] Top-level transcription processing error:`, error);
-        sendProgress(clientId, 'error', { message: `Processing failed: ${error.message || 'Unknown error'}` });
+        // Ensure error is sent if not already handled within specific paths
+        if (!error.message?.includes('Gemini processing failed') && !error.message?.includes('Deepgram failed')) {
+             sendProgress(clientId, 'error', { message: `Processing failed: ${error.message || 'Unknown error'}` });
+        }
     } finally {
         if (fs.existsSync(filePath)) { fs.unlinkSync(filePath); console.log(`[${clientId}] Cleaned up original file: ${filePath}`); }
         chunkPaths.forEach(chunkPath => { if (fs.existsSync(chunkPath)) { fs.unlinkSync(chunkPath); } });
@@ -370,13 +375,12 @@ app.post('/transcribe', upload.single('audio'), (req, res) => {
    if (!req.file) { return res.status(400).json({ error: 'No file uploaded.' }); }
    const clientId = uuidv4();
    const filePath = req.file.path;
-   const originalName = req.file.originalname; // Keep original name
+   const originalName = req.file.originalname; 
    const diarizeEnabled = req.body.enableDiarization === 'true'; 
    const summarizeEnabled = req.body.enableSummarization === 'true'; 
    const model = req.body.model || 'nova-2'; 
    const chunkSizeMB = model.startsWith('gemini-') ? null : (parseInt(req.body.chunkSizeMB, 10) || 10); 
    console.log(`[${clientId}] Received file: ${originalName}, Path: ${filePath}, Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, ChunkTargetMB: ${chunkSizeMB ?? 'N/A'}. Starting async processing.`);
-   // Pass originalName to processTranscription
    processTranscription(clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMB); 
    res.json({ clientId }); 
 });
