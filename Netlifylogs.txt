@@ -1,0 +1,64 @@
+7:20:03 PM: build-image version: 69179d37c92919bcf501ca9a8de95762ede3ffc5 (noble)
+7:20:03 PM: buildbot version: f0767d95f239f529580f009938af6c81a43d4281
+7:20:03 PM: Building without cache
+7:20:03 PM: Fetching build zip file
+7:20:04 PM: Custom publish path detected. Proceeding with the specified path: 'build'
+7:20:04 PM: Custom build command detected. Proceeding with the specified command: 'npm run build'
+7:20:05 PM: Starting to install dependencies
+7:20:05 PM: Python version set to 3.13.2
+7:20:05 PM: Ruby version set to 2.7.2
+7:20:06 PM: Go version set to 1.24.2
+7:20:07 PM: Using PHP version 8.3
+7:20:08 PM: Downloading and installing node v18.20.8...
+7:20:08 PM: Downloading https://nodejs.org/dist/v18.20.8/node-v18.20.8-linux-x64.tar.xz...
+7:20:09 PM: Computing checksum with sha256sum
+7:20:09 PM: Checksums matched!
+7:20:11 PM: Now using node v18.20.8 (npm v10.8.2)
+7:20:11 PM: Enabling Node.js Corepack
+7:20:11 PM: Started restoring cached build plugins
+7:20:11 PM: Finished restoring cached build plugins
+7:20:11 PM: Started restoring cached corepack dependencies
+7:20:11 PM: Finished restoring cached corepack dependencies
+7:20:11 PM: No npm workspaces detected
+7:20:11 PM: Started restoring cached node modules
+7:20:11 PM: Finished restoring cached node modules
+7:20:12 PM: Installing npm packages using npm version 10.8.2
+7:20:13 PM: Failed during stage 'Install dependencies': dependency_installation script returned non-zero exit code: 1
+7:20:13 PM: npm error code ERESOLVE
+7:20:13 PM: npm error ERESOLVE could not resolve
+7:20:13 PM: npm error
+7:20:13 PM: npm error While resolving: lucide-react@0.344.0
+7:20:13 PM: npm error Found: react@19.1.0
+7:20:13 PM: npm error node_modules/react
+7:20:13 PM: npm error react@"^19.1.0" from the root project
+7:20:13 PM: npm error peer react@">=16.8.0" from @emotion/react@11.14.0
+7:20:13 PM: npm error node_modules/@emotion/react
+7:20:13 PM: npm error @emotion/react@"^11.14.0" from the root project
+7:20:13 PM: npm error peer @emotion/react@"^11.0.0-rc.0" from @emotion/styled@11.14.0
+7:20:13 PM: npm error node_modules/@emotion/styled
+7:20:13 PM: npm error @emotion/styled@"^11.14.0" from the root project
+7:20:13 PM: npm error 3 more (@mui/material, @mui/styled-engine, @mui/system)
+7:20:13 PM: npm error 3 more (@mui/material, @mui/styled-engine, @mui/system)
+7:20:13 PM: npm error 13 more (@emotion/styled, ...)
+7:20:13 PM: npm error
+7:20:13 PM: npm error Could not resolve dependency:
+7:20:13 PM: npm error peer react@"^16.5.1 || ^17.0.0 || ^18.0.0" from lucide-react@0.344.0
+7:20:13 PM: npm error node_modules/lucide-react
+7:20:13 PM: npm error lucide-react@"^0.344.0" from the root project
+7:20:13 PM: npm error
+7:20:13 PM: npm error Conflicting peer dependency: react@18.3.1
+7:20:13 PM: npm error node_modules/react
+7:20:13 PM: npm error peer react@"^16.5.1 || ^17.0.0 || ^18.0.0" from lucide-react@0.344.0
+7:20:13 PM: npm error node_modules/lucide-react
+7:20:13 PM: npm error lucide-react@"^0.344.0" from the root project
+7:20:13 PM: npm error
+7:20:13 PM: npm error Fix the upstream dependency conflict, or retry
+7:20:13 PM: npm error this command with --force or --legacy-peer-deps
+7:20:13 PM: npm error to accept an incorrect (and potentially broken) dependency resolution.
+7:20:13 PM: npm error
+7:20:13 PM: npm error
+7:20:13 PM: npm error For a full report see:
+7:20:13 PM: npm error /opt/buildhome/.npm/_logs/2025-04-06T17_20_12_132Z-eresolve-report.txt
+7:20:13 PM: npm error A complete log of this run can be found in: /opt/buildhome/.npm/_logs/2025-04-06T17_20_12_132Z-debug-0.log
+7:20:13 PM: Error during npm install
+7:20:13 PM: Failing build: Failed to install dependencies
