@@ -49,6 +49,9 @@ if (!genAI) {
 
 // SSE Store & Helper
 const sseConnections = {};
+// Track active processes for cancellation
+const activeProcesses = {};
+
 app.get('/progress/:clientId', sseExpress, (req, res) => {
   const clientId = req.params.clientId;
   console.log(`Client ${clientId} connected.`);
@@ -56,8 +59,62 @@ app.get('/progress/:clientId', sseExpress, (req, res) => {
   res.sse('connected', { message: 'Connected' });
   req.on('close', () => {
     console.log(`Client ${clientId} disconnected.`);
-    delete sseConnections[clientId]; 
+    delete sseConnections[clientId];
   });
+});
+
+// Add cancellation endpoint
+app.post('/cancel/:clientId', (req, res) => {
+  const clientId = req.params.clientId;
+  console.log(`Received cancellation request for ${clientId}`);
+  
+  // Kill any active FFmpeg processes
+  if (activeProcesses[clientId]) {
+    activeProcesses[clientId].forEach(process => {
+      try {
+        process.kill('SIGTERM');
+        console.log(`[${clientId}] Killed process ${process.pid}`);
+      } catch (e) {
+        console.error(`[${clientId}] Failed to kill process:`, e);
+      }
+    });
+    delete activeProcesses[clientId];
+  }
+  
+  // Clean up any chunks that might have been created
+  try {
+    const chunks = fs.readdirSync(uploadsDir)
+      .filter(f => f.startsWith(`${clientId}_chunk_`) && f.endsWith('.mp3'))
+      .map(f => path.join(uploadsDir, f));
+    
+    chunks.forEach(chunkPath => {
+      if (fs.existsSync(chunkPath)) {
+        fs.unlinkSync(chunkPath);
+        console.log(`[${clientId}] Cleaned up chunk: ${chunkPath}`);
+      }
+    });
+  } catch (e) {
+    console.error(`[${clientId}] Error cleaning up chunks:`, e);
+  }
+  
+  // Send cancellation message via SSE
+  if (sseConnections[clientId]) {
+    try {
+      sseConnections[clientId].sse('status', { message: 'Transcription cancelled.' });
+      sseConnections[clientId].sse('done', { message: 'Cancelled' });
+      setTimeout(() => {
+        if (sseConnections[clientId]) {
+          try { sseConnections[clientId].end(); } catch(e){}
+          delete sseConnections[clientId];
+          console.log(`[${clientId}] Closed SSE connection after cancellation.`);
+        }
+      }, 1000);
+    } catch (e) {
+      console.error(`[${clientId}] Error sending cancellation message:`, e);
+    }
+  }
+  
+  res.json({ success: true, message: 'Cancellation request received' });
 });
 const sendProgress = (clientId, type, data) => {
   if (sseConnections[clientId]) {
@@ -95,9 +152,14 @@ const splitMediaIntoAudioChunks = (clientId, filePath, targetChunkSizeMB = 10) =
             const totalSizeBytes = parseInt(format.size, 10);
             const avgBitrateBps = totalSizeBytes / totalDurationSec; 
             if (avgBitrateBps > 0) {
-                 segmentDurationSec = Math.round(targetChunkSizeBytes / avgBitrateBps);
-                 segmentDurationSec = Math.max(10, Math.min(segmentDurationSec, 900)); 
-                 console.log(`[${clientId}] Calculated segment duration: ${segmentDurationSec}s`);
+                // Calculate how many chunks we should have based on file size
+                const expectedChunks = Math.ceil(totalSizeBytes / targetChunkSizeBytes);
+                // Calculate segment duration to achieve the expected number of chunks
+                segmentDurationSec = Math.ceil(totalDurationSec / expectedChunks);
+                // Still apply reasonable limits
+                segmentDurationSec = Math.max(10, Math.min(segmentDurationSec, 900));
+                console.log(`[${clientId}] File size: ${(totalSizeBytes/1024/1024).toFixed(2)}MB, Target chunk size: ${targetChunkSizeMB}MB`);
+                console.log(`[${clientId}] Expected chunks: ${expectedChunks}, Calculated segment duration: ${segmentDurationSec}s`);
             } else { console.warn(`[${clientId}] Could not calculate bitrate, using default duration.`); }
         } else { console.warn(`[${clientId}] Could not get duration/size, using default duration.`); }
         sendProgress(clientId, 'status', { message: `Splitting into ~${segmentDurationSec}s chunks...` });
@@ -108,18 +170,60 @@ const splitMediaIntoAudioChunks = (clientId, filePath, targetChunkSizeMB = 10) =
     const outputPattern = path.join(uploadsDir, `${clientId}_chunk_%03d.mp3`);
     const command = `"${ffmpeg}" -i "${filePath}" -f segment -segment_time ${segmentDurationSec} -vn -acodec libmp3lame -ar 16000 -ac 1 -reset_timestamps 1 "${outputPattern}"`; 
     const ffmpegProcess = exec(command);
+    
+    // Track the process for potential cancellation
+    if (!activeProcesses[clientId]) {
+        activeProcesses[clientId] = [];
+    }
+    activeProcesses[clientId].push(ffmpegProcess);
+    
     let stderrData = '';
     ffmpegProcess.stderr.on('data', (data) => { stderrData += data.toString(); });
+    
     ffmpegProcess.on('close', (code) => {
         console.warn(`[${clientId}] FFmpeg stderr output:\n${stderrData}`);
-        if (code !== 0) { return reject(new Error(`Error splitting file (FFmpeg code ${code})`)); }
+        
+        // Remove this process from active processes
+        if (activeProcesses[clientId]) {
+            const index = activeProcesses[clientId].indexOf(ffmpegProcess);
+            if (index !== -1) {
+                activeProcesses[clientId].splice(index, 1);
+            }
+            if (activeProcesses[clientId].length === 0) {
+                delete activeProcesses[clientId];
+            }
+        }
+        
+        if (code !== 0 && code !== null) { 
+            return reject(new Error(`Error splitting file (FFmpeg code ${code})`)); 
+        }
+        
+        // Check if we still have an active connection (not cancelled)
+        if (!sseConnections[clientId]) {
+            console.log(`[${clientId}] Client disconnected during chunking, aborting.`);
+            return reject(new Error('Client disconnected'));
+        }
+        
         const chunks = fs.readdirSync(uploadsDir).filter(f => f.startsWith(`${clientId}_chunk_`) && f.endsWith('.mp3')).map(f => path.join(uploadsDir, f)).sort();
         console.log(`[${clientId}] Found ${chunks.length} MP3 chunks.`);
         sendProgress(clientId, 'status', { message: `Found ${chunks.length} audio chunks.` });
         if (chunks.length === 0) { return reject(new Error(`No audio chunks created.`)); }
         resolve(chunks);
     });
-    ffmpegProcess.on('error', (err) => reject(new Error(`Error executing FFmpeg: ${err.message}`)));
+    
+    ffmpegProcess.on('error', (err) => {
+        // Remove this process from active processes on error
+        if (activeProcesses[clientId]) {
+            const index = activeProcesses[clientId].indexOf(ffmpegProcess);
+            if (index !== -1) {
+                activeProcesses[clientId].splice(index, 1);
+            }
+            if (activeProcesses[clientId].length === 0) {
+                delete activeProcesses[clientId];
+            }
+        }
+        reject(new Error(`Error executing FFmpeg: ${err.message}`));
+    });
   });
 };
 
@@ -331,7 +435,18 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
                 sendProgress(clientId, 'status', { message: 'Generating summary with Gemini...' });
                 console.log(`[${clientId}] Sending Deepgram transcript (length: ${accumulatedTranscript.length}) to Gemini...`);
                 try {
-                    const prompt = `Summarize the following transcript concisely:\n\n---\n${accumulatedTranscript.trim()}\n---`;
+                    const prompt = `Analyze the following transcript and create a structured summary with these specific sections:
+
+1. Key discussion points (bullet points)
+2. Key decisions taken (bullet points)
+3. Key actions to be completed (bullet points)
+
+Format your response exactly with these three headings and bullet points under each. If any section has no relevant content, include the heading but note "None identified".
+
+Transcript:
+---
+${accumulatedTranscript.trim()}
+---`;
                     const safetySettings = [ { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE } ];
                     
                     // *** CORRECTED Gemini API call structure for text-only input ***
@@ -341,7 +456,8 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
                     // *** CORRECTED RESPONSE PARSING for summary call ***
                     const summaryText = response?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''; 
                     console.log(`[${clientId}] Gemini summary received.`);
-                    sendProgress(clientId, 'summary_result', { summary: summaryText });
+                    // Send summary with both 'summary' and 'text' properties for compatibility
+                    sendProgress(clientId, 'summary_result', { summary: summaryText, text: summaryText });
                 } catch (geminiError) {
                      console.error(`[${clientId}] Gemini API error during summarization:`, geminiError);
                      sendProgress(clientId, 'error', { message: `Failed to generate summary: ${geminiError.message || 'Unknown Gemini error'}` });
@@ -376,13 +492,93 @@ app.post('/transcribe', upload.single('audio'), (req, res) => {
    const clientId = uuidv4();
    const filePath = req.file.path;
    const originalName = req.file.originalname; 
-   const diarizeEnabled = req.body.enableDiarization === 'true'; 
-   const summarizeEnabled = req.body.enableSummarization === 'true'; 
+   const diarizeEnabled = req.body.diarize === 'true' || req.body.enableDiarization === 'true';
+   // Check both parameter names for summarization to ensure compatibility
+   const summarizeEnabled = req.body.summarize === 'true' || req.body.enableSummarization === 'true';
    const model = req.body.model || 'nova-2'; 
    const chunkSizeMB = model.startsWith('gemini-') ? null : (parseInt(req.body.chunkSizeMB, 10) || 10); 
    console.log(`[${clientId}] Received file: ${originalName}, Path: ${filePath}, Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, ChunkTargetMB: ${chunkSizeMB ?? 'N/A'}. Starting async processing.`);
    processTranscription(clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMB); 
    res.json({ clientId }); 
+});
+
+// Summarization-only endpoint
+app.post('/summarize', upload.single('audio'), (req, res) => {
+   const clientId = uuidv4();
+   const existingTranscription = req.body.existingTranscription;
+   
+   if (!existingTranscription) {
+      return res.status(400).json({ error: 'No transcription provided for summarization.' });
+   }
+   
+   console.log(`[${clientId}] Received summarization request for existing transcription (${existingTranscription.length} chars).`);
+   
+   // Process the summarization asynchronously
+   (async () => {
+      try {
+         sendProgress(clientId, 'status', { message: 'Generating summary...' });
+         
+         if (!geminiModel) {
+            sendProgress(clientId, 'error', { message: 'Summarization failed: Gemini API key not configured.' });
+            return;
+         }
+         
+         // Create the prompt for summarization with structured format
+         const prompt = `Analyze the following transcript and create a structured summary with these specific sections:
+
+1. Key discussion points (bullet points)
+2. Key decisions taken (bullet points)
+3. Key actions to be completed (bullet points)
+
+Format your response exactly with these three headings and bullet points under each. If any section has no relevant content, include the heading but note "None identified".
+
+Transcript:
+---
+${existingTranscription.trim()}
+---`;
+         const safetySettings = [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
+         ];
+         
+         // Call Gemini API for summarization
+         sendProgress(clientId, 'status', { message: 'Sending request to Gemini...' });
+         const result = await geminiModel.generateContent(prompt, {safetySettings});
+         const response = result.response;
+         const summaryText = response?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+         
+         console.log(`[${clientId}] Gemini summary received.`);
+         
+         if (summaryText.trim().length > 0) {
+            // Send the summary result
+            sendProgress(clientId, 'summary_result', { summary: summaryText, text: summaryText });
+            sendProgress(clientId, 'status', { message: 'Summary generated successfully.', progress: 100 });
+         } else {
+            sendProgress(clientId, 'error', { message: 'Failed to generate summary: Empty response from Gemini.' });
+         }
+      } catch (error) {
+         console.error(`[${clientId}] Error during summarization:`, error);
+         sendProgress(clientId, 'error', { message: `Summarization failed: ${error.message || 'Unknown error'}` });
+      } finally {
+         // Mark the process as complete
+         sendProgress(clientId, 'done', { message: 'Summarization process finished.' });
+         
+         // Close the SSE connection after a delay
+         if (sseConnections[clientId]) {
+            setTimeout(() => {
+               if (sseConnections[clientId]) {
+                  try { sseConnections[clientId].end(); } catch(e){}
+                  delete sseConnections[clientId];
+                  console.log(`[${clientId}] Closed SSE connection.`);
+               }
+            }, 1500);
+         }
+      }
+   })();
+   
+   res.json({ clientId });
 });
 
 app.listen(port, () => {
