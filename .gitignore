@@ -2,26 +2,29 @@
 node_modules/
 **/node_modules/
 
+# Build artifacts
+build/
+frontend/build/
+
 # Environment variables
 .env
-**/.env
-GITHUB PAT.txt # Exclude GitHub PAT file
+backend/.env
+*.local
 
-# Uploads and temporary files
-uploads/
-**/uploads/
+# Logs
 *.log
-*.tmp
-*.swp
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Build output (if applicable)
-/frontend/build/
-/backend/dist/ # If using TypeScript build
+# IDE specific
+.idea/
+.vscode/
+.idx/
 
 # OS generated files
 .DS_Store
 Thumbs.db
 
-# IDE specific files
-.vscode/
-.idea/
+# Firebase
+.firebase/
