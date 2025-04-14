@@ -14,6 +14,8 @@ This document provides a technical overview of the project structure and code fl
 │   ├── node_modules/      # (Not tracked by Git)
 │   ├── uploads/           # Temp storage for uploads (Not tracked by Git)
 │   ├── .env               # API Keys & Config (Not tracked by Git)
+│   ├── middleware/
+│   │   └── authenticateToken.js # Firebase Auth middleware
 │   ├── package.json       # Backend dependencies and scripts
 │   ├── package-lock.json  # Lockfile for backend dependencies
 │   └── server.js          # Main backend Express server logic
@@ -23,6 +25,7 @@ This document provides a technical overview of the project structure and code fl
     ├── src/
     │   ├── App.css        # Basic CSS styling
     │   ├── App.js         # Main React application component and logic
+    │   ├── firebaseConfig.js # Firebase client config
     │   ├── index.css      # Global CSS
     │   ├── index.js       # Entry point for React app
     │   └── ... (other React boilerplate files)
@@ -33,133 +36,88 @@ This document provides a technical overview of the project structure and code fl
 
 ## Backend (`server.js`) Overview
 
-The backend is a Node.js application using the Express framework.
+The backend is a Node.js application using the Express framework. It manages audio/video transcription processes.
 
 **Key Dependencies:**
 
 *   `express`: Web framework.
-*   `cors`: Enables Cross-Origin Resource Sharing (for frontend communication).
-*   `dotenv`: Loads environment variables from `.env`.
-*   `multer`: Handles file uploads (`multipart/form-data`).
+*   `cors`: Enables Cross-Origin Resource Sharing.
+*   `dotenv`: Loads environment variables.
+*   `multer`: Handles file uploads.
 *   `sse-express`: Implements Server-Sent Events (SSE) for progress updates.
-*   `uuid`: Generates unique IDs for client requests.
-*   `@deepgram/sdk`: Deepgram Node.js SDK for transcription.
-*   `@google/generative-ai`: Google Gemini Node.js SDK for transcription/summarization.
-*   `ffmpeg-static`, `ffprobe-static`: Provides FFMpeg/FFprobe binaries for audio processing (chunking, analysis) when using Deepgram.
-*   `mime-types`: Detects file MIME types for Gemini API.
+*   `uuid`: Generates unique IDs.
+*   `@deepgram/sdk`: Deepgram SDK for transcription.
+*   `@google/generative-ai`: Google Gemini SDK for transcription/summarization.
+*   `ffmpeg-static`, `ffprobe-static`: Provides FFmpeg/FFprobe for audio processing.
+*   `mime-types`: Detects file MIME types.
+*   `firebase-admin`: For backend Firebase integration (Firestore, potentially Auth).
 
-**Core Logic:**
+**Core Functionality:**
 
-1.  **Initialization:**
-    *   Sets up Express app, middleware (CORS, JSON parsing).
-    *   Configures Multer for file uploads to the `./uploads/` directory.
-    *   Initializes Deepgram and Google Gemini SDK clients using API keys from `.env`.
-2.  **SSE Endpoint (`/progress/:clientId`):**
-    *   Uses `sse-express` to establish a persistent connection with a specific client (identified by `clientId`).
-    *   Stores the client's response object (`res`) to send updates later.
-    *   Handles client disconnection.
-3.  **Transcription Endpoint (`POST /transcribe`):**
-    *   Receives file upload via Multer (`upload.single('audio')`).
-    *   Receives options (model, diarize, summarize, chunkSizeMB) from `req.body`.
-    *   Generates a unique `clientId` using `uuid`.
-    *   Immediately responds to the client with the `clientId`.
-    *   Calls the main `processTranscription` function asynchronously (does not wait for it to finish).
-4.  **`processTranscription` Function:**
-    *   Determines whether to use the Deepgram or Gemini workflow based on the selected `model`.
-    *   **Deepgram Path:**
-        *   Checks file duration using `ffprobe`.
-        *   If file is long (>30s), calls `splitMediaIntoAudioChunks` to split the audio into MP3 chunks based on target `chunkSizeMB` (uses `ffmpeg`).
-        *   Iterates through chunks, calling `transcribeChunkPrerecorded` for each.
-        *   If file is short, calls `transcribeChunkPrerecorded` directly on the original file.
-        *   Accumulates the plain transcript text from chunks.
-        *   If summarization is enabled, calls the Gemini API with the accumulated Deepgram transcript.
-    *   **Gemini Path:**
-        *   Checks if Gemini client is initialized.
-        *   Calls `transcribeWithGemini`.
-    *   Sends status updates (`status`, `warning`, `error`) and final `done` message via SSE using `sendProgress`.
-    *   Includes extensive `finally` block for cleaning up uploaded files and SSE connections.
-5.  **`splitMediaIntoAudioChunks` Function:**
-    *   Uses `ffprobe` to analyze input file duration/bitrate.
-    *   Calculates an appropriate `-segment_time` for `ffmpeg` based on target chunk size (MB).
-    *   Uses `ffmpeg` to extract the audio (`-vn`), convert to 16kHz mono MP3 (`-acodec libmp3lame -ar 16000 -ac 1`), and split into time-based segments.
-    *   Returns an array of chunk file paths.
-6.  **`transcribeChunkPrerecorded` Function (Deepgram):**
-    *   Takes a chunk file path, diarize flag, and model name.
-    *   Reads the chunk file buffer.
-    *   Calls Deepgram's Pre-recorded API (`deepgramClient.listen.prerecorded.transcribeFile`) with appropriate options (`diarize`, `model`, `punctuate`, `smart_format`).
-    *   Parses the response:
-        *   If diarization enabled and successful, formats output with "Speaker X:" labels based on the `paragraphs` array.
-        *   Otherwise, uses the plain transcript.
-    *   Sends the formatted transcript chunk via the `partial_transcript` SSE event.
-    *   Returns the *plain* transcript text for accumulation (used for potential Gemini summarization).
-7.  **`transcribeWithGemini` Function:**
-    *   Takes file path, original name, diarize/summarize flags, and model identifier.
-    *   Reads the file, converts to base64 (`inlineData`).
-    *   Checks file size against ~15MB limit for inline data.
-    *   Determines MIME type using manual checks and `mime-types` library.
-    *   Constructs a prompt asking for transcription and optionally diarization/summarization.
-    *   Calls Gemini API (`geminiModel.generateContent`) using the inline data method.
-    *   Parses the response text to extract transcript and summary (if requested).
-    *   Sends the full transcript via `partial_transcript` SSE event and summary via `summary_result` SSE event.
+1.  **Initialization:** Sets up Express, middleware (CORS, JSON parsing, Firebase Admin SDK, Firestore).
+2.  **File Upload:** Configures Multer for uploads to `./uploads/`.
+3.  **SDK Initialization:** Initializes Deepgram and Google Gemini SDKs using API keys from `.env`.
+4.  **SSE Endpoint (`/progress/:clientId`):** Establishes persistent connections using `sse-express` to send real-time updates to clients.
+5.  **Transcription Endpoint (`POST /transcribe`):**
+    *   Receives file uploads and options (model, diarize, summarize, chunkSizeMB).
+    *   Generates a unique `clientId`.
+    *   Responds immediately with `clientId`.
+    *   Asynchronously calls `processTranscription`.
+6.  **Summarization Endpoint (`POST /summarize`):**
+    *   Receives existing transcription text.
+    *   Generates a unique `clientId`.
+    *   Asynchronously calls Gemini to generate a summary.
+    *   Uses SSE to send status and the final summary.
+7.  **Cancellation Endpoint (`POST /cancel/:clientId`):** Allows clients to request cancellation of an ongoing process (kills FFmpeg, cleans up chunks, notifies via SSE).
+8.  **Authenticated API (`/api/transcripts`):
+    *   Uses `authenticateToken` middleware (verifies Firebase ID token).
+    *   Currently implements `POST /api/transcripts` to save transcript data (filename, transcript, summary, model, options, userId) to Firestore.
+9.  **`processTranscription` Function:**
+    *   Orchestrates the transcription workflow.
+    *   Determines whether to use Deepgram or Gemini based on the selected `model`.
+    *   **Deepgram Path:** Uses `ffprobe` to check duration. If long, calls `splitMediaIntoAudioChunks` (uses `ffmpeg`). Transcribes chunks/file using `transcribeChunkPrerecorded`. Optionally summarizes the final Deepgram transcript using Gemini.
+    *   **Gemini Path:** Calls `transcribeWithGemini` (currently uses inline data).
+    *   Sends status, warnings, errors, partial results, and final `done` message via SSE (`sendProgress` helper).
+    *   Includes cleanup logic (`finally` block).
+10. **Helper Functions:** `sendProgress`, `splitMediaIntoAudioChunks`, `transcribeChunkPrerecorded`, `transcribeWithGemini` encapsulate specific logic.
 
 ## Frontend (`App.js`) Overview
 
-The frontend is a single-page React application created using Create React App (CRA). It currently uses standard HTML elements and CSS for the UI after issues with MUI.
+The frontend is a single-page React application built with Create React App, providing the user interface for the transcription service.
 
-**Key State Variables:**
+**Key Dependencies:**
 
-*   `selectedFile`: Holds the uploaded file object.
-*   `transcription`: Stores the accumulating transcript text.
-*   `summary`: Stores the received summary text.
-*   `isLoading`: Boolean flag for loading state.
-*   `error`: Stores error messages for display.
-*   `progressMessage`: Stores status updates from the backend.
-*   `enableDiarization`, `enableSummarization`: Boolean flags for options.
-*   `selectedModel`, `selectedChunkSize`: Stores user selections for options.
+*   `react`: Core UI library.
+*   `axios`: For making HTTP requests to the backend.
+*   `lucide-react`: For icons.
+*   `react-markdown`: To render summaries formatted in Markdown.
+*   `firebase`: For client-side Firebase Authentication.
 
-**Core Logic:**
+**Core Functionality:**
 
-1.  **UI Rendering:** Renders input elements, option selectors (model, chunk size, checkboxes), action buttons (Transcribe, Reset/Cancel, Copy, Save), and display areas for progress, errors, summary, and transcription.
-2.  **State Management:** Uses `useState` hooks to manage all application state.
-3.  **File Handling:** Uses a standard `<input type="file">` triggered by a button. Stores the selected file in state.
-4.  **Option Handling:** Updates state variables when dropdowns or checkboxes change. Conditionally renders the chunk size selector based on whether a Gemini model is chosen.
-5.  **`handleTranscription` Function:**
-    *   Triggered by the "Transcribe File" button.
-    *   Resets previous results, sets loading state.
-    *   Creates `FormData` including the file and selected options.
-    *   Makes a `POST` request to the backend `/transcribe` endpoint using `axios`.
-    *   Receives the `clientId` from the backend response.
+1.  **UI Rendering:** Displays controls for file upload, model selection (Deepgram, Gemini), options (diarization, summarization, chunk size), and action buttons. Renders areas for progress messages, errors, transcription text, and summary.
+2.  **State Management:** Uses React hooks (`useState`, `useEffect`, `useRef`) to manage application state (selected file, results, loading status, errors, user options, UI state like dark mode, authenticated user).
+3.  **File Handling:** Uses a standard file input, supports drag-and-drop uploads.
+4.  **Transcription Workflow:**
+    *   User selects file and options.
+    *   `handleTranscription` sends file and options to the backend `/transcribe` endpoint using `axios`.
+    *   Receives `clientId` from the backend.
     *   Establishes an SSE connection to `/progress/:clientId` using `new EventSource()`.
-    *   Sets up event listeners (`onopen`, `status`, `partial_transcript`, `summary_result`, `warning`, `done`, `error`) for the SSE connection.
-    *   Updates state (`progressMessage`, `transcription`, `summary`, `error`, `isLoading`) based on received SSE messages.
-    *   Closes the SSE connection on `done` or `error`.
-6.  **`handleCancelReset` Function:**
-    *   If loading, closes the SSE connection and resets loading/progress state (frontend only).
-    *   If not loading, calls `resetState` to clear the form completely.
-7.  **Copy/Save Functions:** Use browser APIs (`navigator.clipboard`, `Blob`/`URL.createObjectURL`) to copy or save the displayed transcript/summary.
-8.  **Auto-Scroll:** Uses a `useRef` on the transcription textarea and a `useEffect` hook to scroll to the bottom when the `transcription` state changes.
+    *   Listens for SSE events (`status`, `partial_transcript`, `summary_result`, `warning`, `done`, `error`) and updates the UI state accordingly.
+5.  **Summarization Workflow:**
+    *   `handleSummarization` sends the *existing* transcription text to the backend `/summarize` endpoint.
+    *   Receives `clientId` and establishes an SSE connection similar to transcription.
+    *   Listens for SSE events (`status`, `summary_result`, `warning`, `done`, `error`) to display progress and the final summary.
+6.  **Firebase Authentication:**
+    *   Integrates with Firebase client SDK (`firebaseConfig.js`).
+    *   Provides "Sign In with Google" (`handleSignIn`) and "Sign Out" (`handleSignOut`) functionality using `signInWithPopup` and `signOut`.
+    *   Uses `onAuthStateChanged` to listen for authentication state changes and update the `currentUser` state, displaying user info or the sign-in button.
+7.  **User Experience:** Includes features like dark mode toggle, copy/save buttons for results, cancellation of ongoing jobs (`handleCancelReset`), auto-scrolling transcription area, and clear visual feedback for loading states and errors.
+8.  **Result Display:** Uses tabs to switch between the transcription view (plain text in a `<pre>` tag) and the summary view (rendered using `ReactMarkdown`).
 
 ## Communication Flow
 
-1.  User selects file and options in Frontend (`App.js`).
-2.  User clicks "Transcribe File".
-3.  Frontend sends file and options via POST request to Backend (`/transcribe`).
-4.  Backend immediately responds with a unique `clientId`.
-5.  Frontend uses `clientId` to open an SSE connection to Backend (`/progress/:clientId`).
-6.  Backend starts processing asynchronously (`processTranscription`).
-7.  Backend sends `status` updates via SSE to Frontend.
-8.  If using Deepgram:
-    *   Backend splits file (if needed) via `ffmpeg`.
-    *   Backend sends chunks to Deepgram Pre-recorded API.
-    *   Backend sends formatted transcript chunks via `partial_transcript` SSE event.
-    *   Backend potentially calls Gemini for summary after all chunks.
-9.  If using Gemini:
-    *   Backend prepares inline data or uses File API (currently inline).
-    *   Backend calls Gemini `generateContent`.
-    *   Backend parses response.
-    *   Backend sends full transcript via `partial_transcript` SSE event.
-    *   Backend sends summary (if requested/extracted) via `summary_result` SSE event.
-10. Backend sends `done` or `error` message via SSE.
-11. Frontend updates UI based on received SSE messages.
-12. Backend/Frontend close SSE connection.
-13. Backend cleans up temporary files.
+1.  **Transcription:** Frontend POSTs file/options to `/transcribe` -> Backend returns `clientId` -> Frontend opens SSE `/progress/:clientId` -> Backend sends SSE updates (`status`, `partial_transcript`, `summary_result`, `done`/`error`).
+2.  **Summarization:** Frontend POSTs existing transcript to `/summarize` -> Backend returns `clientId` -> Frontend opens SSE `/progress/:clientId` -> Backend sends SSE updates (`status`, `summary_result`, `done`/`error`).
+3.  **Cancellation:** Frontend POSTs to `/cancel/:clientId` -> Backend attempts to stop processing and notifies via existing SSE connection.
+4.  **Saving (Future):** Authenticated Frontend POSTs transcript/summary data to `/api/transcripts` -> Backend verifies token and saves to Firestore.
