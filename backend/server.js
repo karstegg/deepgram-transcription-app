@@ -30,8 +30,8 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import multer from 'multer';
 import { createClient } from '@deepgram/sdk'; 
-import ffmpeg from 'ffmpeg-static';
-import ffprobe from 'ffprobe-static'; 
+// import ffmpeg from 'ffmpeg-static';
+//import ffprobe from 'ffprobe-static'; 
 import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -335,10 +335,10 @@ const splitMediaIntoAudioChunks = (clientId, filePath, targetChunkSizeMB = 10) =
 
     try {
         sendProgress(clientId, 'status', { message: 'Analyzing file for chunking...' });
-        const ffprobePath = ffprobe.path;
-        // Added quotes around filePath for safety
-        const probeCommand = `\\"${ffprobePath}\\" -v error -show_format -show_streams -of json \\"${filePath}\\"`;
+        // Execute ffprobe directly, relying on the system PATH where apt-get installed it
+        const probeCommand = `ffprobe -v error -show_format -show_streams -of json "${filePath}"`;
         let probeProcess;
+
 
         const { stdout: probeJson } = await new Promise((resolveCmd, rejectCmd) => { // Use rejectCmd here
             probeProcess = exec(probeCommand, { maxBuffer: 10 * 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
@@ -408,7 +408,7 @@ const splitMediaIntoAudioChunks = (clientId, filePath, targetChunkSizeMB = 10) =
 
     const outputPattern = path.join(uploadsDir, `${safeClientId}_chunk_%03d.mp3`);
     // USE -f segment and -segment_time
-    const command = `\\"${ffmpeg}\\" -nostdin -i \\"${filePath}\\" -f segment -segment_time ${segmentDurationSec} -vn -acodec libmp3lame -ar 16000 -ac 1 -ab 32k -map a -segment_format mp3 -reset_timestamps 1 -threads 1 \\"${outputPattern}\\"`;
+    const command = `ffmpeg -nostdin -i "${filePath}" -f segment -segment_time ${segmentDurationSec} -vn -acodec libmp3lame -ar 16000 -ac 1 -ab 32k -map a -segment_format mp3 -reset_timestamps 1 -threads 1 "${outputPattern}"`;
     console.log(`[${clientId}] Executing FFmpeg segment command: ${command}`);
     let ffmpegProcess; // Declare outside
 
@@ -506,10 +506,10 @@ const transcribeChunkPrerecorded = async (clientId, chunkPath, diarizeEnabled, m
 
         sendProgress(clientId, 'status', { message: `Sending audio to Deepgram...`, model: model });
         console.log(`[${clientId}] Deepgram transcribe.prerecorded call in progress...`); // Added log
-        const { results } = await deepgramClient.listen.prerecorded.transcribe(source, options);
+        const { result } = await deepgramClient.listen.prerecorded.transcribeFile(source, options);
         console.log(`[${clientId}] Deepgram transcribe.prerecorded call complete.`); // Added log
 
-        const transcript = results.channels[0].alternatives[0].transcript;
+        const transcript = result.results.channels[0].alternatives[0].transcript; // Access transcript via result.results
         const partialTranscript = transcript.length > 250 ? transcript.substring(0, 250) + '...' : transcript;
         sendProgress(clientId, 'partial_transcript', { text: partialTranscript, model: model }); // Send progress message
 
@@ -630,8 +630,8 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
             console.log(`[${clientId}] Entering Deepgram Path...`); // ADDED
              try {
                 console.log(`[${clientId}] Getting file duration via ffprobe...`); // ADDED
-                const ffprobePath = ffprobe.path;
-                const durationCommand = `"${ffprobePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`;
+                // const ffprobePath = ffprobe.path;
+                const durationCommand = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`;
                 const { stdout } = await new Promise((resolve, reject) => {
                     exec(durationCommand, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
                         if (error) reject(stderr || error); else resolve({ stdout });

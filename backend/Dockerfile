@@ -4,9 +4,9 @@ FROM node:18
 # Set the working directory in the container
 WORKDIR /usr/src/app
 
-# <<< ADDED LINE TO INSTALL FFMPEG/FFPROBE SYSTEM-WIDE >>>
-# Running update and install in one RUN layer for cache efficiency and cleanup
+# Install ffmpeg system-wide and update PATH
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+ENV PATH /usr/bin:${PATH} # <<< ADDED: Ensure /usr/bin is in PATH
 
 # Copy package.json and package-lock.json first to leverage Docker cache
 COPY package*.json ./
