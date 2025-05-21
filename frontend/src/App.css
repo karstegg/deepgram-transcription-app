@@ -1,0 +1,41 @@
+/* Keep basic App centering and background if desired, */
+/* or remove if MUI ThemeProvider handles background */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f4f6f8; /* Lighter background for contrast with MUI Paper */
+}
+
+.App {
+  /* text-align: center; */ /* MUI Box handles centering */
+}
+
+/* Remove most other styles as MUI components handle them */
+
+/* Keep error styling if Alert doesn't cover all cases */
+/* .error {
+  color: #ff4d4d;
+  margin-top: 15px;
+  font-size: 14px;
+} */
+
+/* Keep progress message styling if needed */
+/* .progress-message {
+  margin-top: 15px;
+  font-size: 16px;
+  color: #333; /* Adjust color for light background */
+  /* font-style: italic;
+  min-height: 1.2em; 
+} */
+
+/* Styles for result text areas might still be useful */
+/* if default MUI TextField needs overrides */
+/* .summary-result textarea,
+.transcription-result textarea {
+  font-family: monospace; 
+  white-space: pre-wrap; 
+} */
