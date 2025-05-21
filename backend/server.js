@@ -39,8 +39,8 @@ if (!genAI) {
     console.warn("GEMINI_API_KEY not found. Gemini features disabled."); 
 } else {
     try {
-        geminiModel = genAI.getGenerativeModel({ model: "gemini-2.5-pro-exp-03-25" }); 
-        console.log("Gemini model initialized:", "gemini-2.5-pro-exp-03-25");
+        geminiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" }); 
+        console.log("Gemini model initialized:", "gemini-1.5-flash-latest");
     } catch (initError) {
          console.error("Failed to initialize Gemini model:", initError);
          geminiModel = null; 
