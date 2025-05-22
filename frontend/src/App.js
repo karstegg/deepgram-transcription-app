@@ -62,6 +62,8 @@ export default function App() {
   const transcriptionAreaRef = useRef(null);
   const dropAreaRef = useRef(null);
 
+  const backendUrl = 'https://deepgram-backend-upcbdbi5la-uc.a.run.app'; // Or use process.env.REACT_APP_BACKEND_URL
+
   // Determine if the selected model is Gemini
   const isGeminiModel = selectedModel.startsWith('gemini-');
 
@@ -305,8 +307,6 @@ export default function App() {
         existingTranscription: transcription,
       };
 
-      const backendUrl = 'https://deepgram-backend-upcbdbi5la-uc.a.run.app'; // Or use process.env.REACT_APP_BACKEND_URL
-    
       // Send request with JSON payload
       const response = await axios.post(`${backendUrl}/summarize`, payload);
     
@@ -407,7 +407,7 @@ export default function App() {
       formData.append('chunkSizeMB', selectedChunkSize);
 
       // Send request to backend
-      const response = await axios.post('http://localhost:5000/transcribe', formData, {
+      const response = await axios.post(`${backendUrl}/transcribe`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -418,7 +418,7 @@ export default function App() {
       setProgressMessage('Starting transcription...');
 
       // Set up SSE connection
-      const eventSource = new EventSource(`http://localhost:5000/progress/${clientId}`);
+      const eventSource = new EventSource(`${backendUrl}/progress/${clientId}`);
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
