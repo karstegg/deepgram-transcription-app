@@ -8,27 +8,30 @@ This document provides a technical overview of the project structure and code fl
 .
 ├── .gitignore
 ├── README.md
-├── CODE_DOCUMENTATION.md  # This file
-├── PRODUCT_REQUIREMENTS.md # PRD file
+├── CODE_DOCUMENTATION.md              # This file
+├── PRODUCT_REQUIREMENTS.md            # PRD file
+├── Refactor_Instructions_For_Jules.md # Guidelines for future refactoring
+├── latest_progress_log.md             # Consolidated progress tracking
+├── firebase.json                      # Firebase Hosting configuration
 ├── backend/
-│   ├── node_modules/      # (Not tracked by Git)
-│   ├── uploads/           # Temp storage for uploads (Not tracked by Git)
-│   ├── .env               # API Keys & Config (Not tracked by Git)
-│   ├── package.json       # Backend dependencies and scripts
-│   ├── package-lock.json  # Lockfile for backend dependencies
-│   └── server.js          # Main backend Express server logic
+│   ├── node_modules/                  # (Not tracked by Git)
+│   ├── uploads/                       # Temp storage for uploads (Not tracked by Git)
+│   ├── .env                           # API Keys & Config (Not tracked by Git)
+│   ├── package.json                   # Backend dependencies and scripts
+│   ├── package-lock.json              # Lockfile for backend dependencies
+│   └── server.js                      # Main backend Express server logic
 └── frontend/
-    ├── node_modules/      # (Not tracked by Git)
-    ├── public/            # Static assets (index.html, favicon, etc.)
+    ├── node_modules/                  # (Not tracked by Git)
+    ├── public/                        # Static assets (index.html, favicon, etc.)
     ├── src/
-    │   ├── App.css        # Basic CSS styling
-    │   ├── App.js         # Main React application component and logic
-    │   ├── index.css      # Global CSS
-    │   ├── index.js       # Entry point for React app
+    │   ├── App.css                    # Basic CSS styling
+    │   ├── App.js                     # Main React application component and logic
+    │   ├── index.css                  # Global CSS
+    │   ├── index.js                   # Entry point for React app
     │   └── ... (other React boilerplate files)
-    ├── .gitignore         # Frontend specific ignores
-    ├── package.json       # Frontend dependencies and scripts
-    └── package-lock.json  # Lockfile for frontend dependencies
+    ├── .gitignore                     # Frontend specific ignores
+    ├── package.json                   # Frontend dependencies and scripts
+    └── package-lock.json              # Lockfile for frontend dependencies
 ```
 
 ## Backend (`server.js`) Overview
@@ -104,10 +107,11 @@ The backend is a Node.js application using the Express framework.
 
 ## Frontend (`App.js`) Overview
 
-The frontend is a single-page React application created using Create React App (CRA). It currently uses standard HTML elements and CSS for the UI after issues with MUI.
+The frontend is a single-page React application created using Create React App (CRA). For cross-platform compatibility in build scripts (specifically for setting environment variables like `CI=false`), `cross-env` is utilized in its `package.json` (e.g., `"build": "cross-env CI=false react-scripts build"`). It currently uses standard HTML elements and CSS for the UI after issues with MUI.
 
-**Key State Variables:**
+**Key State Variables (managed with `useState` and `useRef`):**
 
+*   `backendUrl`: Stores the URL for the deployed backend service (`https://deepgram-backend-upcbdbi5la-uc.a.run.app`). This is defined at the top-level of the `App` component and used consistently for all API calls and EventSource connections to ensure the frontend communicates with the live backend, not `localhost`.
 *   `selectedFile`: Holds the uploaded file object.
 *   `transcription`: Stores the accumulating transcript text.
 *   `summary`: Stores the received summary text.
@@ -138,6 +142,22 @@ The frontend is a single-page React application created using Create React App (
     *   If not loading, calls `resetState` to clear the form completely.
 7.  **Copy/Save Functions:** Use browser APIs (`navigator.clipboard`, `Blob`/`URL.createObjectURL`) to copy or save the displayed transcript/summary.
 8.  **Auto-Scroll:** Uses a `useRef` on the transcription textarea and a `useEffect` hook to scroll to the bottom when the `transcription` state changes.
+
+## Deployment Architecture
+
+The application is deployed as follows:
+
+*   **Backend (Node.js/Express - `server.js`):**
+    *   **Platform:** Google Cloud Run
+    *   **Service URL:** `https://deepgram-backend-upcbdbi5la-uc.a.run.app`
+    *   **Configuration:** API keys (`DEEPGRAM_API_KEY`, `GEMINI_API_KEY`) and other environment variables are managed directly within the Google Cloud Run service configuration.
+
+*   **Frontend (React - `App.js` & related files):**
+    *   **Platform:** Firebase Hosting
+    *   **Hosting URL:** `https://deepgram-transcription-app.web.app`
+    *   **Build Process:** The React app is built using the `npm run build` script (which incorporates `cross-env CI=false react-scripts build`) in the `frontend` directory.
+    *   **Deployment:** The static assets from the `frontend/build` directory are deployed using the Firebase CLI (`firebase deploy --only hosting`).
+    *   **Configuration:** The `firebase.json` file at the project root specifies `"hosting": { "public": "frontend/build", ... }` to direct Firebase Hosting to the correct build output.
 
 ## Communication Flow
 

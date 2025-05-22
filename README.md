@@ -21,16 +21,19 @@ A web application for transcribing audio and video files using different AI mode
 
 ## Tech Stack
 
-*   **Frontend:** React, Axios, CSS
+*   **Frontend:** React, Axios, CSS, `cross-env` (for build scripting)
 *   **Backend:** Node.js, Express, Multer (for file uploads), SSE-Express
+*   **Deployment Platforms:**
+    *   Backend: Google Cloud Run
+    *   Frontend: Firebase Hosting
 *   **APIs:**
     *   Deepgram API (Pre-recorded)
     *   Google Gemini API (`@google/generative-ai`)
-*   **Utilities:** FFMpeg (via `ffmpeg-static`), FFprobe (via `ffprobe-static`), `uuid`, `mime-types`, `dotenv`
+*   **Utilities:** FFMpeg (via `ffmpeg-static`), FFprobe (via `ffprobe-static`), `uuid`, `mime-types`, `dotenv`, Firebase CLI (`firebase-tools`)
 
 ## Setup
 
-1.  **Clone Repository:** `git clone <repository_url>` (Replace with the actual URL once pushed)
+1.  **Clone Repository:** `git clone https://github.com/karstegg/deepgram-transcription-app.git`
 2.  **Install Backend Dependencies:**
     ```bash
     cd backend
@@ -51,7 +54,16 @@ A web application for transcribing audio and video files using different AI mode
     *   Get Deepgram key from [deepgram.com](https://deepgram.com/)
     *   Get Gemini key from [Google AI Studio](https://aistudio.google.com/app/apikey)
 
-## Running the App
+6.  **(Optional) Install Firebase CLI for Frontend Deployment:** If you plan to re-deploy the frontend, install the Firebase CLI globally:
+    ```bash
+    npm install -g firebase-tools
+    ```
+    Then log in:
+    ```bash
+    firebase login
+    ```
+
+## Running the App Locally
 
 1.  **Start Backend Server:**
     ```bash
@@ -66,10 +78,25 @@ A web application for transcribing audio and video files using different AI mode
     ```
     (Opens automatically at http://localhost:3000)
 
+## Deployment
+
+The application is deployed with the following setup:
+
+*   **Backend (Node.js/Express):**
+    *   Deployed on **Google Cloud Run**.
+    *   Service URL: `https://deepgram-backend-upcbdbi5la-uc.a.run.app`
+    *   Environment variables (`DEEPGRAM_API_KEY`, `GEMINI_API_KEY`) are configured directly in the Cloud Run service.
+*   **Frontend (React):**
+    *   Deployed on **Firebase Hosting**.
+    *   Hosting URL: `https://deepgram-transcription-app.web.app`
+    *   The frontend is built using `npm run build` (which utilizes `cross-env`) and deployed via the Firebase CLI (`firebase deploy --only hosting`).
+    *   The `firebase.json` in the project root is configured with `"public": "frontend/build"`.
+
 ## Current Status
 
-*   This code is on the `feature/gemini-transcription-option` branch.
-*   The `master` branch contains a stable version tagged `v1.0-basic-working` which uses Deepgram only (with chunking) and has a simpler UI.
+*   The `development` branch contains the latest stable and deployed version of the application.
+*   Both transcription and summarization features are functional in the deployed environment.
+*   The `master` branch may contain an older version.
 
 ## Known Issues / Limitations
 
@@ -77,11 +104,25 @@ A web application for transcribing audio and video files using different AI mode
 *   The "Cancel" button only stops the frontend SSE connection, it doesn't terminate ongoing backend processes (FFMpeg or API calls).
 *   The UI uses basic HTML/CSS after MUI integration caused rendering errors.
 
-## Potential Next Steps
+## Project Roadmap & Future Objectives
 
-*   Re-attempt UI modernization using MUI or another library.
-*   Implement backend cancellation logic.
-*   Refine FFMpeg chunk sizing calculation.
-*   Investigate and fix Gemini File API usage for >15MB files.
-*   Integrate a different LLM for more advanced/customizable summarization.
-*   Prepare for deployment (build scripts, environment variables, hosting).
+The following outlines the planned enhancements and future direction for the application:
+
+1.  **Refactor `frontend/src/App.js` and `backend/server.js`:**
+    *   Utilize a tool like "Jules by Google" or similar methods to modularize these large files.
+    *   **Goal:** Improve code organization, readability, and maintainability for easier debugging and development.
+2.  **Test Refactored Implementation:**
+    *   Conduct thorough end-to-end testing after refactoring to ensure all functionalities remain intact.
+3.  **Handle File Size Limits on Google Cloud Run (GCR):**
+    *   Address GCR's request size limits (e.g., default 32MB) for large audio/video file uploads.
+    *   **Potential Solutions:** Explore streaming uploads, client-side file chunking with server-side reassembly, or leveraging Google Cloud Storage (GCS) as an intermediary for uploads.
+4.  **Verify User Account Management & Deploy to Production:**
+    *   If user account management features are planned or implemented, ensure they are robust and working correctly.
+    *   Prepare for and execute deployment to a designated production environment.
+5.  **Structured Summarization:**
+    *   Enhance the summarization feature to allow users to define or select predefined sections/headings (e.g., for meeting minutes: "Action Items," "Decisions," "Key Discussion Points"), guiding the AI to produce more structured output.
+6.  **Update Existing Documents with New Transcripts:**
+    *   Implement functionality for users to upload an existing document (e.g., previous meeting minutes).
+    *   The application will then use a new audio transcript to intelligently update the existing document or generate a new version, incorporating the latest information.
+
+*(For detailed refactoring guidelines, see `Refactor_Instructions_For_Jules.md`)*
