@@ -1,3 +1,12 @@
+## 25 May 2025
+
+*   **Documentation Alignment & Refactor Preparation Review:**
+    *   Verified the current frontend file structure in the `development` branch. Confirmed that `frontend/src/` does not contain `components/`, `constants/`, `hooks/`, or `services/` subdirectories and that `frontend/src/App.js` handles the majority of the frontend logic, including API interactions. This clarifies that previous assumptions about a more refactored frontend state were incorrect for this branch.
+    *   Updated `CODE_DOCUMENTATION.md`: The folder structure diagram within this file, specifically for `frontend/src/`, has been corrected to list the actual files present (e.g., `App.js`, `index.js`, `firebaseConfig.js`) and remove placeholders or incorrect references to a more granular structure.
+    *   Updated `DEPLOY_RUN_INSTRUCTIONS_GCP.md`: Added a note clarifying the current state of the frontend (logic primarily in `App.js`) and enhanced the backend deployment section to provide clearer, more robust instructions for managing environment variables on Google Cloud Run, detailing the behavior of `gcloud run deploy` with and without the `--set-env-vars` flag.
+    *   Acknowledged that `frontend-refactor-instructions.md` (created previously by the user) might require review to ensure its guidance aligns with the actual, less-refactored starting state of the frontend in this branch before commencing a new refactoring effort.
+*   **Objective:** To ensure all key documentation accurately reflects the current state of the `development` branch, providing a solid and correct baseline for any future development or refactoring work.
+
 ## 20 May 2025
 
 Main Goal & Context:

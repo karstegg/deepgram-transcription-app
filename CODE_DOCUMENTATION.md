@@ -24,11 +24,15 @@ This document provides a technical overview of the project structure and code fl
     ├── node_modules/                  # (Not tracked by Git)
     ├── public/                        # Static assets (index.html, favicon, etc.)
     ├── src/
-    │   ├── App.css                    # Basic CSS styling
+    │   ├── App.css
     │   ├── App.js                     # Main React application component and logic
-    │   ├── index.css                  # Global CSS
+    │   ├── App.test.js
+    │   ├── firebaseConfig.js          # Firebase configuration (if used beyond hosting)
+    │   ├── index.css
     │   ├── index.js                   # Entry point for React app
-    │   └── ... (other React boilerplate files)
+    │   ├── logo.svg
+    │   ├── reportWebVitals.js
+    │   └── setupTests.js
     ├── .gitignore                     # Frontend specific ignores
     ├── package.json                   # Frontend dependencies and scripts
     └── package-lock.json              # Lockfile for frontend dependencies
