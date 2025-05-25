@@ -24,8 +24,26 @@ This document provides a technical overview of the project structure and code fl
     ├── node_modules/                  # (Not tracked by Git)
     ├── public/                        # Static assets (index.html, favicon, etc.)
     ├── src/
+    │   ├── components/
+    │   │   ├── AdvancedOptionsPanel.js  # UI for advanced transcription/summarization settings
+    │   │   ├── ErrorDisplay.js          # Component to show error messages
+    │   │   ├── FileUploadArea.js        # Component for file drag-and-drop/selection
+    │   │   ├── ProgressDisplay.js       # Component to show transcription/summarization progress
+    │   │   ├── ResultsTabs.js           # Tabs for switching between transcript and summary
+    │   │   ├── SummaryPanel.js          # Panel to display summarization results
+    │   │   ├── TranscriptionControls.js # Buttons and inputs for controlling transcription
+    │   │   └── TranscriptionPanel.js    # Panel to display transcription results
+    │   ├── constants/
+    │   │   └── constants.js             # Application-wide constants (models, SSE types, etc.)
+    │   ├── hooks/
+    │   │   ├── useSummarizationService.js # Custom hook for summarization logic
+    │   │   └── useTranscriptionService.js # Custom hook for transcription logic
+    │   ├── services/
+    │   │   └── apiService.js            # Centralized API calls to the backend
+    │   ├── utils/
+    │   │   └── utils.js                 # Utility functions
     │   ├── App.css
-    │   ├── App.js                     # Main React application component and logic
+    │   ├── App.js                     # Main React application component (now orchestrates sub-components)
     │   ├── App.test.js
     │   ├── firebaseConfig.js          # Firebase configuration (if used beyond hosting)
     │   ├── index.css
@@ -40,136 +58,25 @@ This document provides a technical overview of the project structure and code fl
 
 ## Backend (`server.js`) Overview
 
-The backend is a Node.js application using the Express framework.
+Th
+<truncated 8284 bytes>
+ the Google Cloud Run service configuration.
 
-**Key Dependencies:**
-
-*   `express`: Web framework.
-*   `cors`: Enables Cross-Origin Resource Sharing (for frontend communication).
-*   `dotenv`: Loads environment variables from `.env`.
-*   `multer`: Handles file uploads (`multipart/form-data`).
-*   `sse-express`: Implements Server-Sent Events (SSE) for progress updates.
-*   `uuid`: Generates unique IDs for client requests.
-*   `@deepgram/sdk`: Deepgram Node.js SDK for transcription.
-*   `@google/generative-ai`: Google Gemini Node.js SDK for transcription/summarization.
-*   `ffmpeg-static`, `ffprobe-static`: Provides FFMpeg/FFprobe binaries for audio processing (chunking, analysis) when using Deepgram.
-*   `mime-types`: Detects file MIME types for Gemini API.
-
-**Core Logic:**
-
-1.  **Initialization:**
-    *   Sets up Express app, middleware (CORS, JSON parsing).
-    *   Configures Multer for file uploads to the `./uploads/` directory.
-    *   Initializes Deepgram and Google Gemini SDK clients using API keys from `.env`.
-2.  **SSE Endpoint (`/progress/:clientId`):**
-    *   Uses `sse-express` to establish a persistent connection with a specific client (identified by `clientId`).
-    *   Stores the client's response object (`res`) to send updates later.
-    *   Handles client disconnection.
-3.  **Transcription Endpoint (`POST /transcribe`):**
-    *   Receives file upload via Multer (`upload.single('audio')`).
-    *   Receives options (model, diarize, summarize, chunkSizeMB) from `req.body`.
-    *   Generates a unique `clientId` using `uuid`.
-    *   Immediately responds to the client with the `clientId`.
-    *   Calls the main `processTranscription` function asynchronously (does not wait for it to finish).
-4.  **`processTranscription` Function:**
-    *   Determines whether to use the Deepgram or Gemini workflow based on the selected `model`.
-    *   **Deepgram Path:**
-        *   Checks file duration using `ffprobe`.
-        *   If file is long (>30s), calls `splitMediaIntoAudioChunks` to split the audio into MP3 chunks based on target `chunkSizeMB` (uses `ffmpeg`).
-        *   Iterates through chunks, calling `transcribeChunkPrerecorded` for each.
-        *   If file is short, calls `transcribeChunkPrerecorded` directly on the original file.
-        *   Accumulates the plain transcript text from chunks.
-        *   If summarization is enabled, calls the Gemini API with the accumulated Deepgram transcript.
-    *   **Gemini Path:**
-        *   Checks if Gemini client is initialized.
-        *   Calls `transcribeWithGemini`.
-    *   Sends status updates (`status`, `warning`, `error`) and final `done` message via SSE using `sendProgress`.
-    *   Includes extensive `finally` block for cleaning up uploaded files and SSE connections.
-5.  **`splitMediaIntoAudioChunks` Function:**
-    *   Uses `ffprobe` to analyze input file duration/bitrate.
-    *   Calculates an appropriate `-segment_time` for `ffmpeg` based on target chunk size (MB).
-    *   Uses `ffmpeg` to extract the audio (`-vn`), convert to 16kHz mono MP3 (`-acodec libmp3lame -ar 16000 -ac 1`), and split into time-based segments.
-    *   Returns an array of chunk file paths.
-6.  **`transcribeChunkPrerecorded` Function (Deepgram):**
-    *   Takes a chunk file path, diarize flag, and model name.
-    *   Reads the chunk file buffer.
-    *   Calls Deepgram's Pre-recorded API (`deepgramClient.listen.prerecorded.transcribeFile`) with appropriate options (`diarize`, `model`, `punctuate`, `smart_format`).
-    *   Parses the response:
-        *   If diarization enabled and successful, formats output with "Speaker X:" labels based on the `paragraphs` array.
-        *   Otherwise, uses the plain transcript.
-    *   Sends the formatted transcript chunk via the `partial_transcript` SSE event.
-    *   Returns the *plain* transcript text for accumulation (used for potential Gemini summarization).
-7.  **`transcribeWithGemini` Function:**
-    *   Takes file path, original name, diarize/summarize flags, and model identifier.
-    *   Reads the file, converts to base64 (`inlineData`).
-    *   Checks file size against ~15MB limit for inline data.
-    *   Determines MIME type using manual checks and `mime-types` library.
-    *   Constructs a prompt asking for transcription and optionally diarization/summarization.
-    *   Calls Gemini API (`geminiModel.generateContent`) using the inline data method.
-    *   Parses the response text to extract transcript and summary (if requested).
-    *   Sends the full transcript via `partial_transcript` SSE event and summary via `summary_result` SSE event.
-
-## Frontend (`App.js`) Overview
-
-The frontend is a single-page React application created using Create React App (CRA). For cross-platform compatibility in build scripts (specifically for setting environment variables like `CI=false`), `cross-env` is utilized in its `package.json` (e.g., `"build": "cross-env CI=false react-scripts build"`). It currently uses standard HTML elements and CSS for the UI after issues with MUI.
-
-**Key State Variables (managed with `useState` and `useRef`):**
-
-*   `backendUrl`: Stores the URL for the deployed backend service (`https://deepgram-backend-upcbdbi5la-uc.a.run.app`). This is defined at the top-level of the `App` component and used consistently for all API calls and EventSource connections to ensure the frontend communicates with the live backend, not `localhost`.
-*   `selectedFile`: Holds the uploaded file object.
-*   `transcription`: Stores the accumulating transcript text.
-*   `summary`: Stores the received summary text.
-*   `isLoading`: Boolean flag for loading state.
-*   `error`: Stores error messages for display.
-*   `progressMessage`: Stores status updates from the backend.
-*   `enableDiarization`, `enableSummarization`: Boolean flags for options.
-*   `selectedModel`, `selectedChunkSize`: Stores user selections for options.
-
-**Core Logic:**
-
-1.  **UI Rendering:** Renders input elements, option selectors (model, chunk size, checkboxes), action buttons (Transcribe, Reset/Cancel, Copy, Save), and display areas for progress, errors, summary, and transcription.
-2.  **State Management:** Uses `useState` hooks to manage all application state.
-3.  **File Handling:** Uses a standard `<input type="file">` triggered by a button. Stores the selected file in state.
-4.  **Option Handling:** Updates state variables when dropdowns or checkboxes change. Conditionally renders the chunk size selector based on whether a Gemini model is chosen.
-5.  **`handleTranscription` Function:**
-    *   Triggered by the "Transcribe File" button.
-    *   Resets previous results, sets loading state.
-    *   Creates `FormData` including the file and selected options.
-    *   Makes a `POST` request to the backend `/transcribe` endpoint using `axios`.
-    *   Receives the `clientId` from the backend response.
-    *   Establishes an SSE connection to `/progress/:clientId` using `new EventSource()`.
-    *   Sets up event listeners (`onopen`, `status`, `partial_transcript`, `summary_result`, `warning`, `done`, `error`) for the SSE connection.
-    *   Updates state (`progressMessage`, `transcription`, `summary`, `error`, `isLoading`) based on received SSE messages.
-    *   Closes the SSE connection on `done` or `error`.
-6.  **`handleCancelReset` Function:**
-    *   If loading, closes the SSE connection and resets loading/progress state (frontend only).
-    *   If not loading, calls `resetState` to clear the form completely.
-7.  **Copy/Save Functions:** Use browser APIs (`navigator.clipboard`, `Blob`/`URL.createObjectURL`) to copy or save the displayed transcript/summary.
-8.  **Auto-Scroll:** Uses a `useRef` on the transcription textarea and a `useEffect` hook to scroll to the bottom when the `transcription` state changes.
-
-## Deployment Architecture
-
-The application is deployed as follows:
-
-*   **Backend (Node.js/Express - `server.js`):**
-    *   **Platform:** Google Cloud Run
-    *   **Service URL:** `https://deepgram-backend-upcbdbi5la-uc.a.run.app`
-    *   **Configuration:** API keys (`DEEPGRAM_API_KEY`, `GEMINI_API_KEY`) and other environment variables are managed directly within the Google Cloud Run service configuration.
-
-*   **Frontend (React - `App.js` & related files):**
+*   **Frontend (React - Refactored Structure):**
     *   **Platform:** Firebase Hosting
     *   **Hosting URL:** `https://deepgram-transcription-app.web.app`
     *   **Build Process:** The React app is built using the `npm run build` script (which incorporates `cross-env CI=false react-scripts build`) in the `frontend` directory.
     *   **Deployment:** The static assets from the `frontend/build` directory are deployed using the Firebase CLI (`firebase deploy --only hosting`).
     *   **Configuration:** The `firebase.json` file at the project root specifies `"hosting": { "public": "frontend/build", ... }` to direct Firebase Hosting to the correct build output.
+    *   **Note on Refactor:** The frontend, particularly `App.js`, has been refactored. Logic is now more modular, distributed across components in `src/components/`, custom hooks in `src/hooks/`, and services like `src/services/apiService.js`. `App.js` primarily serves as an orchestrator.
 
 ## Communication Flow
 
-1.  User selects file and options in Frontend (`App.js`).
-2.  User clicks "Transcribe File".
-3.  Frontend sends file and options via POST request to Backend (`/transcribe`).
+1.  User interacts with components in Frontend (e.g., `FileUploadArea.js`, `TranscriptionControls.js`).
+2.  State and actions are managed by `App.js` and relevant custom hooks (e.g., `useTranscriptionService.js`).
+3.  On "Transcribe File", `apiService.js` sends file and options via POST request to Backend (`/transcribe`).
 4.  Backend immediately responds with a unique `clientId`.
-5.  Frontend uses `clientId` to open an SSE connection to Backend (`/progress/:clientId`).
+5.  `apiService.js` (or a hook using it) uses `clientId` to open an SSE connection to Backend (`/progress/:clientId`).
 6.  Backend starts processing asynchronously (`processTranscription`).
 7.  Backend sends `status` updates via SSE to Frontend.
 8.  If using Deepgram:
@@ -184,6 +91,6 @@ The application is deployed as follows:
     *   Backend sends full transcript via `partial_transcript` SSE event.
     *   Backend sends summary (if requested/extracted) via `summary_result` SSE event.
 10. Backend sends `done` or `error` message via SSE.
-11. Frontend updates UI based on received SSE messages.
+11. Frontend components (e.g., `TranscriptionPanel.js`, `SummaryPanel.js`, `ProgressDisplay.js`) update UI based on received SSE messages and state from hooks/`App.js`.
 12. Backend/Frontend close SSE connection.
 13. Backend cleans up temporary files.
