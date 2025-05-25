@@ -1,5 +1,9 @@
 ## 25 May 2025
 
+*   **Final Full System Redeployment (`development-refactor` branch):**
+    *   **Backend:** Successfully rebuilt and redeployed the backend to Google Cloud Run. New revision: `deepgram-backend-00066-7fb`. Service URL: [https://deepgram-backend-upcbdbi5la-uc.a.run.app](https://deepgram-backend-upcbdbi5la-uc.a.run.app).
+    *   **Frontend:** Successfully rebuilt and redeployed the frontend to Firebase Hosting. Hosting URL: [https://deepgram-transcription-app.web.app](https://deepgram-transcription-app.web.app).
+    *   **Outcome:** Both backend and frontend are live with the latest refactored code from the `development-refactor` branch.
 *   **Frontend Refactor Completion, Deployment, and Merge (`feature/frontend-refactor-jules` -> `development-refactor`):**
     *   **Problem:** The `frontend/src/constants/constants.js` file on the `feature/frontend-refactor-jules` branch was found to be corrupted with appended code from other modules (e.g., `useTranscriptionService.js`, `useSummarizationService.js`, `AdvancedOptionsPanel.js`), causing build failures due to redeclared identifiers.
     *   **Fix:** Restored `constants.js` to its correct, original content. This resolved the build errors.
