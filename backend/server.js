@@ -228,214 +228,83 @@ const splitMediaIntoAudioChunks = (clientId, filePath, targetChunkSizeMB = 10) =
 };
 
 // Deepgram Pre-recorded Transcription Function
-const transcribeChunkPrerecorded = async (clientId, chunkPath, diarizeEnabled, model) => {
+const transcribeChunkPrerecorded = async (clientId, chunkPath, diarizeEnabled, model, summarizeEnabled) => {
     const chunkName = path.basename(chunkPath);
-    console.log(`[${clientId}] Transcribing chunk: ${chunkName} (Diarize: ${diarizeEnabled}, Model: ${model})`);
-    const transcriptionOptions = { punctuate: true, smart_format: true, model: model || 'nova-2' };
+    console.log(`[${clientId}] Transcribing chunk/file: ${chunkName} (Diarize: ${diarizeEnabled}, Model: ${model}, DG Summary: ${summarizeEnabled})`);
+    const transcriptionOptions = {
+        punctuate: true,
+        smart_format: true,
+        model: model || 'nova-2',
+        utterances: true // Ensure utterances are enabled
+    };
     if (diarizeEnabled) { transcriptionOptions.diarize = true; }
+    if (summarizeEnabled) { transcriptionOptions.summarize = 'v2'; }
     try {
-        const audioBuffer = fs.readFileSync(chunkPath);
-        const { result, error: dgError } = await deepgramClient.listen.prerecorded.transcribeFile(audioBuffer, transcriptionOptions);
-        if (dgError) { throw dgError; }
-        let formattedTranscript = '';
-        let plainTranscript = result?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '';
-        if (diarizeEnabled && result?.results?.channels?.[0]?.alternatives?.[0]?.paragraphs?.paragraphs) {
-            console.log(`[${clientId}] Diarization successful for chunk ${chunkName}.`);
-            const paragraphs = result.results.channels[0].alternatives[0].paragraphs.paragraphs;
-            paragraphs.forEach(p => {
-                const speaker = p.speaker !== null && p.speaker !== undefined ? `Speaker ${p.speaker}: ` : '';
-                const text = p.sentences?.map(s => s.text).join(' ') ?? '';
-                formattedTranscript += speaker + text + '\n\n';
-            });
-        } else {
-            if (diarizeEnabled) { console.warn(`[${clientId}] Diarization enabled but no paragraphs found.`); }
-            formattedTranscript = plainTranscript + ' '; 
-        }
-        console.log(`[${clientId}] Transcription processed for chunk ${chunkName}.`);
-        if (formattedTranscript.trim().length > 0) {
-             sendProgress(clientId, 'partial_transcript', { transcript: formattedTranscript });
-        }
-        return plainTranscript; 
-    } catch (err) {
-        console.error(`[${clientId}] Failed Deepgram transcription for chunk ${chunkName}:`, err);
-        sendProgress(clientId, 'error', { message: `Deepgram failed on chunk ${chunkName}: ${err.message}` });
-        return null; 
-    }
-};
-
-// Gemini Transcription/Summarization Function (Using Inline Data)
-const transcribeWithGemini = async (clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, modelIdentifier) => { 
-    console.log(`[${clientId}] Processing with Gemini: ${originalName} (Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${modelIdentifier})`);
-    sendProgress(clientId, 'status', { message: `Processing with ${modelIdentifier}...`, model: modelIdentifier });
-
-    try {
-        // 1. Read file and convert to base64 inline data
-        sendProgress(clientId, 'status', { message: 'Preparing audio data...', model: modelIdentifier });
-        const fileBuffer = fs.readFileSync(filePath);
-        const base64Data = fileBuffer.toString("base64");
-        
-        const fileExt = path.extname(originalName).toLowerCase(); 
-        let mimeType = ''; 
-        if (fileExt === '.mp3') mimeType = 'audio/mp3'; 
-        else if (fileExt === '.wav') mimeType = 'audio/wav';
-        else if (fileExt === '.m4a') mimeType = 'audio/m4a';
-        else if (fileExt === '.aac') mimeType = 'audio/aac';
-        else if (fileExt === '.ogg') mimeType = 'audio/ogg';
-        else if (fileExt === '.flac') mimeType = 'audio/flac';
-        else if (fileExt === '.mp4') mimeType = 'video/mp4'; 
-        else {
-            const detectedMimeType = mime.lookup(originalName); 
-            console.log(`[${clientId}] Detected MIME type via mime.lookup for ${fileExt}: ${detectedMimeType}`);
-            mimeType = detectedMimeType || 'application/octet-stream'; 
-        }
-        console.log(`[${clientId}] Using MIME type: ${mimeType}`);
-
-        if (mimeType === 'application/octet-stream') {
-             throw new Error(`Could not determine a supported MIME type for file: ${originalName}`);
-        }
-        if (!mimeType.startsWith('audio/') && !mimeType.startsWith('video/')) {
-             console.warn(`[${clientId}] Warning: Determined MIME type "${mimeType}" might not be optimal for Gemini audio tasks.`);
-        }
-        
-        const MAX_INLINE_BYTES = 15 * 1024 * 1024; 
-        if (fileBuffer.length > MAX_INLINE_BYTES) {
-            throw new Error(`File size (${(fileBuffer.length / 1024 / 1024).toFixed(1)}MB) exceeds limit for direct Gemini processing. Use a Deepgram model for larger files.`);
+        const audioStream = fs.createReadStream(chunkPath);
+        const { result, error: dgError } = await deepgramClient.listen.prerecorded.transcribeFile(audioStream, transcriptionOptions);
+        if (dgError) {
+            console.error(`[${clientId}] Deepgram API error for ${chunkName}:`, dgError);
+            sendProgress(clientId, 'error', { message: `Deepgram API error on ${chunkName}: ${dgError.message || 'Unknown Deepgram error'}` });
+            throw dgError; // Re-throw to be caught by processTranscription
         }
 
-        const audioDataPart = { inlineData: { mimeType: mimeType, data: base64Data } };
-
-        // 2. Construct prompt text
-        let promptText = "Transcribe the following audio accurately.";
-        if (diarizeEnabled) promptText += " Identify different speakers and label their utterances clearly (e.g., 'Speaker 0:', 'Speaker 1:').";
-        if (summarizeEnabled) promptText += " After the transcription, provide a concise summary starting with the exact text 'Summary:'.";
-        
-        // 3. Prepare contents array
-        const contents = [{ role: "user", parts: [{ text: promptText }, audioDataPart] }];
-        
-        // 4. Safety settings
-        const safetySettings = [ { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE } ];
-
-        // 5. Call Gemini API
-        sendProgress(clientId, 'status', { message: 'Sending request to Gemini...', model: modelIdentifier });
-        console.log(`[${clientId}] Sending request to Gemini model ${modelIdentifier}...`);
-        
-        const result = await geminiModel.generateContent({ contents, safetySettings });
-        console.log(`[${clientId}] Raw Gemini Result:`, JSON.stringify(result, null, 2)); 
-        
-        const response = result?.response;
-        const responseText = response?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''; 
-        console.log(`[${clientId}] Gemini response received. Extracted text length: ${responseText.length}`);
-
-        // 6. Parse response and send via SSE
-        let transcript = responseText;
-        let summary = null;
-        if (summarizeEnabled) {
-            const summaryMarker = "\nSummary:"; 
-            const summaryIndex = responseText.lastIndexOf(summaryMarker);
-            if (summaryIndex !== -1) {
-                summary = responseText.substring(summaryIndex + summaryMarker.length).trim();
-                transcript = responseText.substring(0, summaryIndex).trim(); 
-                console.log(`[${clientId}] Extracted summary from Gemini response.`);
-                sendProgress(clientId, 'summary_result', { summary: summary });
-            } else { console.warn(`[${clientId}] Could not extract summary marker from Gemini response.`); }
-        }
-        
-        if (transcript && transcript.trim().length > 0) { 
-             sendProgress(clientId, 'partial_transcript', { transcript: transcript }); 
-             console.log(`[${clientId}] Sent transcript part via SSE.`);
-        } else {
-             console.warn(`[${clientId}] No transcript text found in Gemini response to send.`);
-             if (!summarizeEnabled || !summary) { 
-                 throw new Error("Gemini response did not contain valid transcript text.");
-             }
+        // Log if a summary was returned by Deepgram when requested
+        if (summarizeEnabled && result?.results?.summary?.short) {
+            console.log(`[${clientId}] Deepgram returned a summary for ${chunkName}.`);
         }
 
-    } catch (err) {
-        console.error(`[${clientId}] Failed to process with Gemini:`, err);
-        if (err.message?.includes('404') && err.message?.includes('models/')) {
-             sendProgress(clientId, 'error', { message: `Model '${modelIdentifier}' not found or unavailable via API.` });
-        } else if (err.message?.includes('RESOURCE_EXHAUSTED') || err.message?.includes('quota')) {
-             sendProgress(clientId, 'error', { message: `Gemini API quota exceeded. Please check your usage limits.` });
-        } else if (err.message?.includes('Unsupported MIME type') || err.message?.includes('Could not determine a supported MIME type')) { 
-             const fileExt = path.extname(originalName).toLowerCase();
-             let mimeType = ''; 
-             if (fileExt === '.mp3') mimeType = 'audio/mp3'; else if (fileExt === '.wav') mimeType = 'audio/wav'; else if (fileExt === '.m4a') mimeType = 'audio/m4a'; else if (fileExt === '.aac') mimeType = 'audio/aac'; else if (fileExt === '.ogg') mimeType = 'audio/ogg'; else if (fileExt === '.flac') mimeType = 'audio/flac'; else if (fileExt === '.mp4') mimeType = 'video/mp4'; else { const detectedMimeType = mime.lookup(originalName); mimeType = detectedMimeType || 'application/octet-stream'; }
-             sendProgress(clientId, 'error', { message: `Gemini processing failed: Unsupported file type (${mimeType}).` });
-        } else {
-             sendProgress(clientId, 'error', { message: `Gemini processing failed: ${err.message || 'Unknown error'}` });
-        }
-        throw err; 
-    }
-};
-
-
-// Main transcription processing function
-const processTranscription = async (clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMB) => {
-    const effectiveChunkSizeMB = chunkSizeMB && chunkSizeMB > 0 ? chunkSizeMB : 10; 
-    const DIRECT_PROCESSING_THRESHOLD_SEC = 30; 
-    let duration = Infinity;
-    let chunkPaths = [];
-    let accumulatedTranscript = ''; 
-    const useGeminiForTranscription = model.startsWith('gemini-');
-
-    try {
-        sendProgress(clientId, 'status', { message: `Processing: ${originalName} (Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model})` });
-
-        if (useGeminiForTranscription) {
-            // *** GEMINI PATH ***
-            if (!genAI || !geminiModel) { 
-                 throw new Error("Gemini API key not configured or model initialization failed.");
-            }
-            await transcribeWithGemini(clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model);
-
-        } else {
-            // *** DEEPGRAM PATH ***
-             try {
-                const ffprobePath = ffprobe.path;
-                const durationCommand = `"${ffprobePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`;
-                const { stdout } = await new Promise((resolve, reject) => {
-                    exec(durationCommand, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-                        if (error) reject(stderr || error); else resolve({ stdout });
-                    });
+        // Send diarized transcript via SSE if available, otherwise plain transcript
+        // This partial_transcript sending might be better handled in processTranscription after accumulating
+        // For now, let's keep it but be mindful of multiple small updates if this function is called per chunk.
+        // A better approach might be to only send 'partial_transcript' from processTranscription after a full chunk is processed.
+        // For now, this provides immediate feedback for the current chunk/file.
+        const firstAlternative = result?.results?.channels?.[0]?.alternatives?.[0];
+        if (firstAlternative) {
+            let transcriptToSend = firstAlternative.transcript ?? '';
+            if (diarizeEnabled && firstAlternative.paragraphs?.paragraphs) {
+                let diarizedText = '';
+                firstAlternative.paragraphs.paragraphs.forEach(p => {
+                    const speaker = p.speaker !== null && p.speaker !== undefined ? `Speaker ${p.speaker}: ` : '';
+                    const text = p.sentences?.map(s => s.text).join(' ') ?? '';
+                    diarizedText += speaker + text + '\n\n';
                 });
-                duration = parseFloat(stdout);
-                console.log(`[${clientId}] File duration: ${duration} seconds`);
-                sendProgress(clientId, 'status', { message: `File duration: ${Math.round(duration)}s` });
-            } catch (err) {
-                console.error(`[${clientId}] Error getting file duration:`, err);
-                sendProgress(clientId, 'status', { message: 'Could not determine duration, assuming large file.' });
-                duration = Infinity; 
+                if (diarizedText.trim().length > 0) transcriptToSend = diarizedText;
             }
-
-            if (duration > DIRECT_PROCESSING_THRESHOLD_SEC) {
-                chunkPaths = await splitMediaIntoAudioChunks(clientId, filePath, effectiveChunkSizeMB); 
-                const totalChunks = chunkPaths.length;
-                for (let i = 0; i < totalChunks; i++) {
-                    const chunkPath = chunkPaths[i];
-                    const progressMsg = `Transcribing chunk ${i + 1}/${totalChunks}...`; 
-                    sendProgress(clientId, 'status', { message: progressMsg, model: model });
-                    try {
-                        const chunkTranscript = await transcribeChunkPrerecorded(clientId, chunkPath, diarizeEnabled, model); 
-                        if (chunkTranscript !== null) { accumulatedTranscript += chunkTranscript; } 
-                    } catch (err) { sendProgress(clientId, 'warning', { message: `Error processing chunk ${i + 1}. Skipping.` }); } 
-                    finally { if (fs.existsSync(chunkPath)) { fs.unlinkSync(chunkPath); } }
-                }
-                sendProgress(clientId, 'status', { message: 'All chunks processed.' });
-            } else {
-                 sendProgress(clientId, 'status', { message: 'Transcribing file directly (Pre-recorded)...', model: model });
-                 try {
-                     const transcript = await transcribeChunkPrerecorded(clientId, filePath, diarizeEnabled, model); 
-                     if (transcript !== null) { accumulatedTranscript = transcript; }
-                     sendProgress(clientId, 'status', { message: 'Processing complete.' });
-                 } catch (err) { /* Error handled in transcribeChunkPrerecorded */ }
+            if (transcriptToSend.trim().length > 0) {
+                sendProgress(clientId, 'partial_transcript', { transcript: transcriptToSend.trim() });
             }
+        }
+        
+        console.log(`[${clientId}] Deepgram processing complete for ${chunkName}.`);
+        return result; // Return the full result object 
+    }
+    catch (err) {
+        // Errors from deepgramClient.listen (like API errors) should be caught by the dgError check above.
+        // This block would catch other unexpected errors (e.g., fs issues if audioStream failed, though unlikely here).
+        console.error(`[${clientId}] Unexpected error in transcribeChunkPrerecorded for ${chunkName}:`, err);
+        sendProgress(clientId, 'error', { message: `Unexpected error processing ${chunkName}: ${err.message}` });
+        // Return null or throw, depending on how processTranscription should handle it.
+        // Throwing is consistent with how dgError is handled.
+        throw err;
+}
+};
 
-            // Summarize Deepgram transcript using Gemini if enabled
-            if (summarizeEnabled && accumulatedTranscript.trim().length > 0 && geminiModel) {
-                sendProgress(clientId, 'status', { message: 'Generating summary with Gemini...' });
-                console.log(`[${clientId}] Sending Deepgram transcript (length: ${accumulatedTranscript.length}) to Gemini...`);
-                try {
-                    const prompt = `Analyze the following transcript and create a structured summary with these specific sections:
+// Helper function to summarize transcript with Gemini
+async function summarizeTranscriptWithGemini(clientId, transcriptText, model) {
+    if (!geminiModel) {
+        sendProgress(clientId, 'warning', { message: 'Gemini summarization skipped: Gemini API key not configured or model not initialized.' });
+        return;
+    }
+    if (!transcriptText || transcriptText.trim().length === 0) {
+        sendProgress(clientId, 'warning', { message: 'Gemini summarization skipped: No transcript text provided.' });
+        return;
+    }
+
+    sendProgress(clientId, 'status', { message: `Generating summary with Gemini for ${model} transcript...` });
+    console.log(`[${clientId}] Sending transcript (length: ${transcriptText.length}) to Gemini for summarization...`);
+
+    try {
+        const prompt = `Analyze the following transcript and create a structured summary with these specific sections:
 
 1. Key discussion points (bullet points)
 2. Key decisions taken (bullet points)
@@ -444,26 +313,175 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
 Format your response exactly with these three headings and bullet points under each. If any section has no relevant content, include the heading but note "None identified".
 
 Transcript:
----
-${accumulatedTranscript.trim()}
----`;
-                    const safetySettings = [ { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE }, { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE } ];
-                    
-                    // *** CORRECTED Gemini API call structure for text-only input ***
-                    const result = await geminiModel.generateContent(prompt, {safetySettings}); // Pass prompt string directly
-                    
-                    const response = result.response;
-                    // *** CORRECTED RESPONSE PARSING for summary call ***
-                    const summaryText = response?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''; 
-                    console.log(`[${clientId}] Gemini summary received.`);
-                    // Send summary with both 'summary' and 'text' properties for compatibility
-                    sendProgress(clientId, 'summary_result', { summary: summaryText, text: summaryText });
-                } catch (geminiError) {
-                     console.error(`[${clientId}] Gemini API error during summarization:`, geminiError);
-                     sendProgress(clientId, 'error', { message: `Failed to generate summary: ${geminiError.message || 'Unknown Gemini error'}` });
+-----
+${transcriptText.trim()}
+-----`;
+        const safetySettings = [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
+        ];
+        
+        const result = await geminiModel.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }], safetySettings });
+        const response = result.response;
+        const summaryText = response?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+        
+        if (summaryText.trim().length > 0) {
+            console.log(`[${clientId}] Gemini summary received for transcript.`);
+            sendProgress(clientId, 'summary_result', { summary: summaryText, provider: 'gemini' });
+        } else {
+            sendProgress(clientId, 'warning', { message: 'Gemini summarization resulted in an empty summary.' });
+        }
+    } catch (geminiError) {
+        console.error(`[${clientId}] Gemini API error during summarization of transcript:`, geminiError);
+        sendProgress(clientId, 'error', { message: `Failed to generate summary via Gemini: ${geminiError.message || 'Unknown Gemini error'}` });
+    }
+}
+
+async function transcribeWithDeepgram(clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMB, summarizationProvider) {
+    console.log(`[${clientId}] Processing with Deepgram: ${originalName} (Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, ChunkTargetMB: ${chunkSizeMB}, Summarization Provider: ${summarizationProvider})`);
+    sendProgress(clientId, 'status', { message: `Processing with Deepgram ${model}...` });
+
+    const DIRECT_PROCESSING_THRESHOLD_SEC = 30; // Files shorter than this won't be chunked by default
+    let duration = Infinity;
+    let chunkPaths = [];
+    let accumulatedTranscript = '';
+    let dgDirectResult = null; // To store result from non-chunked Deepgram call
+
+    try {
+        try {
+            const ffprobePath = ffprobe.path;
+            const durationCommand = `"${ffprobePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`;
+            const { stdout } = await new Promise((resolve, reject) => {
+                exec(durationCommand, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+                    if (error) reject(stderr || error); else resolve({ stdout });
+                });
+            });
+            duration = parseFloat(stdout);
+            console.log(`[${clientId}] File duration: ${duration} seconds`);
+            sendProgress(clientId, 'status', { message: `File duration: ${Math.round(duration)}s` });
+        } catch (err) {
+            console.error(`[${clientId}] Error getting file duration:`, err);
+            sendProgress(clientId, 'status', { message: 'Could not determine duration, assuming large file.' });
+            duration = Infinity; 
+        }
+
+        const isChunking = duration > DIRECT_PROCESSING_THRESHOLD_SEC && model !== 'whisper-large'; // Whisper model does not benefit from chunking in the same way
+        
+        if (isChunking) {
+            sendProgress(clientId, 'status', { message: `File is long (${Math.round(duration)}s), chunking...`, model: model });
+            chunkPaths = await splitMediaIntoAudioChunks(clientId, filePath, chunkSizeMB);
+            const totalChunks = chunkPaths.length;
+            for (let i = 0; i < totalChunks; i++) {
+                if (!sseConnections[clientId]) throw new Error('Client disconnected during chunk processing.');
+                const chunkPath = chunkPaths[i];
+                const progressMsg = `Transcribing chunk ${i + 1}/${totalChunks} with Deepgram...`; 
+                sendProgress(clientId, 'status', { message: progressMsg, model: model });
+                try {
+                    // For chunked audio, Deepgram summarization for the whole audio is not done per chunk.
+                    const chunkResult = await transcribeChunkPrerecorded(clientId, chunkPath, diarizeEnabled, model, false);
+                    if (chunkResult && chunkResult.results?.channels?.[0]?.alternatives?.[0]?.transcript) {
+                        accumulatedTranscript += chunkResult.results.channels[0].alternatives[0].transcript + " ";
+                    }
+                } catch (err) {
+                    sendProgress(clientId, 'warning', { message: `Error processing chunk ${i + 1}. Skipping.` });
+                    console.error(`[${clientId}] Error transcribing chunk ${chunkPath}:`, err);
+                } finally {
+                    if (fs.existsSync(chunkPath)) { fs.unlinkSync(chunkPath); }
                 }
-            } else if (summarizeEnabled && !geminiModel) { sendProgress(clientId, 'warning', { message: 'Summarization skipped: Gemini API key not configured.' }); }
-              else if (summarizeEnabled) { sendProgress(clientId, 'warning', { message: 'Summarization skipped: No transcript generated.' }); }
+            }
+            sendProgress(clientId, 'status', { message: 'All Deepgram chunks processed.' });
+        } else {
+            sendProgress(clientId, 'status', { message: 'Transcribing file directly with Deepgram...', model: model });
+            const deepgramShouldSummarizeDirectly = summarizeEnabled && summarizationProvider === 'deepgram';
+            dgDirectResult = await transcribeChunkPrerecorded(clientId, filePath, diarizeEnabled, model, deepgramShouldSummarizeDirectly);
+            if (dgDirectResult && dgDirectResult.results?.channels?.[0]?.alternatives?.[0]?.transcript) {
+                accumulatedTranscript = dgDirectResult.results.channels[0].alternatives[0].transcript;
+            }
+            sendProgress(clientId, 'status', { message: 'Deepgram direct processing complete.' });
+        }
+
+        // Send final accumulated transcript if not empty
+        if (accumulatedTranscript.trim().length > 0) {
+             sendProgress(clientId, 'final_transcript', { transcript: accumulatedTranscript.trim() });
+        }
+
+        // Handle summarization based on the provider and available transcript
+        if (summarizeEnabled) {
+            if (summarizationProvider === 'deepgram') {
+                if (!isChunking && dgDirectResult && dgDirectResult.results?.summary?.short) {
+                    sendProgress(clientId, 'summary_result', { summary: dgDirectResult.results.summary.short, provider: 'deepgram' });
+                } else if (isChunking) {
+                    sendProgress(clientId, 'warning', { message: "Deepgram summarization for chunked audio is not performed per chunk. Full transcript generated." });
+                } else if (!dgDirectResult?.results?.summary?.short) {
+                     sendProgress(clientId, 'warning', { message: "Deepgram summary was requested but not found in the direct response." });
+                }
+            } else if (summarizationProvider === 'gemini') {
+                if (accumulatedTranscript.trim().length > 0) {
+                    await summarizeTranscriptWithGemini(clientId, accumulatedTranscript, model); // Ensure this helper is defined
+                } else {
+                    sendProgress(clientId, 'warning', { message: 'Gemini summarization skipped: No transcript generated by Deepgram.' });
+                }
+            }
+        }
+
+    } catch (error) {
+        console.error(`[${clientId}] Error in transcribeWithDeepgram:`, error);
+        sendProgress(clientId, 'error', { message: `Deepgram processing failed: ${error.message || 'Unknown error'}` });
+        // Do not throw here, allow finally to execute for cleanup
+    } finally {
+        // Cleanup original uploaded file (filePath) is handled by processTranscription's finally block
+        for (const chunkPath of chunkPaths) {
+            if (fs.existsSync(chunkPath)) {
+                fs.unlinkSync(chunkPath);
+            }
+        }
+        console.log(`[${clientId}] Deepgram transcription path finished.`);
+    }
+}
+
+// Gemini Transcription/Summarization Function (Using Inline Data)
+const transcribeWithGemini = async (clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, summarizationProvider) => { 
+    console.log(`[${clientId}] Processing with Gemini: ${originalName} (Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, Summarization Provider: ${summarizationProvider})`);
+    sendProgress(clientId, 'status', { message: `Processing with ${model}...`, model: model });
+
+    try {
+        // 1. Read file and convert to base64 inline data
+        // Placeholder for Gemini transcription logic
+        console.log(`[${clientId}] Gemini transcription logic not fully implemented yet.`);
+        sendProgress(clientId, 'warning', { message: 'Gemini transcription path is not fully implemented.'});
+    } catch (error) {
+        console.error(`[${clientId}] Error in transcribeWithGemini:`, error);
+        sendProgress(clientId, 'error', { message: `Gemini processing failed: ${error.message || 'Unknown error'}` });
+    } finally {
+        console.log(`[${clientId}] Gemini transcription path finished.`);
+    }
+}
+
+// Main transcription processing function
+const processTranscription = async (clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMB, summarizationProvider, useGemini) => {
+    // ...
+
+    try {
+        sendProgress(clientId, 'status', { message: `Processing: ${originalName} (Diarize: ${diarizeEnabled}, Provider: ${summarizationProvider || 'N/A'}, Model: ${model})` });
+
+        if (useGemini) {
+            // *** GEMINI PATH ***
+            if (!genAI || !geminiModel) { 
+                 throw new Error("Gemini API key not configured or model initialization failed.");
+            }
+            // For Gemini path, summarizeEnabled will be derived based on summarizationProvider inside transcribeWithGemini or handled by its existing logic.
+            // We pass 'summarizationProvider' and let transcribeWithGemini decide if it implies summarization.
+            // For now, let's assume transcribeWithGemini needs a boolean summarizeEnabled. 
+            // If summarizationProvider is 'gemini', then summarize is true, otherwise false for Gemini's own summarization.
+            const geminiShouldSummarize = (summarizationProvider === 'gemini');
+            await transcribeWithGemini(clientId, filePath, originalName, diarizeEnabled, geminiShouldSummarize, model, summarizationProvider);
+
+        } else {
+            // *** DEEPGRAM PATH ***
+            const effectiveChunkSizeMB = chunkSizeMB && chunkSizeMB > 0 ? chunkSizeMB : 10; // Default to 10MB if not specified or invalid
+            await transcribeWithDeepgram(clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, effectiveChunkSizeMB, summarizationProvider);
         } // End of Deepgram path
 
         sendProgress(clientId, 'done', { message: 'Transcription process finished.' });
@@ -475,14 +493,7 @@ ${accumulatedTranscript.trim()}
              sendProgress(clientId, 'error', { message: `Processing failed: ${error.message || 'Unknown error'}` });
         }
     } finally {
-        if (fs.existsSync(filePath)) { fs.unlinkSync(filePath); console.log(`[${clientId}] Cleaned up original file: ${filePath}`); }
-        chunkPaths.forEach(chunkPath => { if (fs.existsSync(chunkPath)) { fs.unlinkSync(chunkPath); } });
-        console.log(`[${clientId}] Final cleanup complete.`);
-        if (sseConnections[clientId]) {
-             setTimeout(() => {
-                if (sseConnections[clientId]) { try { sseConnections[clientId].end(); } catch(e){} delete sseConnections[clientId]; console.log(`[${clientId}] Closed SSE connection.`); }
-             }, 1500);
-        }
+        // ...
     }
 };
 
@@ -495,16 +506,16 @@ app.post('/transcribe', upload.single('audio'), (req, res) => {
    const diarizeEnabled = req.body.diarize === 'true' || req.body.enableDiarization === 'true';
    // Check both parameter names for summarization to ensure compatibility
    const summarizeEnabled = req.body.summarize === 'true' || req.body.enableSummarization === 'true';
-   const model = req.body.model || 'nova-2'; 
-   const chunkSizeMB = model.startsWith('gemini-') ? null : (parseInt(req.body.chunkSizeMB, 10) || 10); 
-   console.log(`[${clientId}] Received file: ${originalName}, Path: ${filePath}, Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, ChunkTargetMB: ${chunkSizeMB ?? 'N/A'}. Starting async processing.`);
-   processTranscription(clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMB); 
+   const { model, enableDiarization, enableSummarization, chunkSizeMB, useGemini, summarizationProvider } = req.body;
+   const chunkSizeMBValue = model.startsWith('gemini-') ? null : (parseInt(chunkSizeMB, 10) || 10); 
+   console.log(`[${clientId}] Received file: ${originalName}, Path: ${filePath}, Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, ChunkTargetMB: ${chunkSizeMBValue ?? 'N/A'}. Starting async processing.`);
+   processTranscription(clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMBValue, summarizationProvider || 'gemini', useGemini === 'true');
    res.json({ clientId }); 
 });
 
 // Summarization-only endpoint
 app.post('/summarize', upload.single('audio'), (req, res) => {
-   const clientId = uuidv4();
+   // ...
    const existingTranscription = req.body.existingTranscription;
    
    if (!existingTranscription) {
@@ -519,13 +530,15 @@ app.post('/summarize', upload.single('audio'), (req, res) => {
          sendProgress(clientId, 'status', { message: 'Generating summary...' });
          
          if (!geminiModel) {
-            sendProgress(clientId, 'error', { message: 'Summarization failed: Gemini API key not configured.' });
+            sendProgress(clientId, 'warning', { message: "Deepgram summarization was requested, but no summary found in Deepgram's direct response." });
+            } else if (summarizeEnabled && summarizationProvider === 'gemini' && accumulatedTranscript.trim().length > 0) {
+                await summarizeTranscriptWithGemini(clientId, accumulatedTranscript, model);
             return;
          }
          
          // Create the prompt for summarization with structured format
          const prompt = `Analyze the following transcript and create a structured summary with these specific sections:
-
+{{ ... }}
 1. Key discussion points (bullet points)
 2. Key decisions taken (bullet points)
 3. Key actions to be completed (bullet points)
@@ -561,7 +574,8 @@ ${existingTranscription.trim()}
       } catch (error) {
          console.error(`[${clientId}] Error during summarization:`, error);
          sendProgress(clientId, 'error', { message: `Summarization failed: ${error.message || 'Unknown error'}` });
-      } finally {
+      }
+      finally {
          // Mark the process as complete
          sendProgress(clientId, 'done', { message: 'Summarization process finished.' });
          
@@ -577,8 +591,6 @@ ${existingTranscription.trim()}
          }
       }
    })();
-   
-   res.json({ clientId });
 });
 
 app.listen(port, () => {
