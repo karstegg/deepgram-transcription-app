@@ -36,6 +36,7 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(true);
   const [activeTab, setActiveTab] = useState(DEFAULT_ACTIVE_TAB);
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
+  const [selectedSummarizationProvider, setSelectedSummarizationProvider] = useState('gemini'); // 'gemini' or 'deepgram'
   
   // Consolidated states from hooks for UI
   const [appLevelError, setAppLevelError] = useState('');
@@ -127,14 +128,16 @@ export default function App() {
     setAppLevelProgressMessage(''); // Clear previous messages
   };
 
-  const handleStartTranscriptionProcess = () => {
-    // Reset summarization if starting new transcription
-    summarizationService.resetSummarizationState();
-    setAppLevelError('');
-    setAppLevelProgressMessage('');
-    setActiveTab(TAB_IDS.TRANSCRIPT);
-    transcriptionService.startTranscription(); // Uses options from its internal state
-  };
+  const handleStartTranscriptionProcess = useCallback(() => {
+    if (!transcriptionService.selectedFile) {
+      setAppLevelError('Please select a file first.');
+      return;
+    }
+    clearAppError();
+    transcriptionService.startTranscription({ 
+      summarizationProvider: selectedSummarizationProvider 
+    });
+  }, [transcriptionService, selectedSummarizationProvider]);
 
   const handleStartSummarizationProcess = () => {
     if (!transcriptionService.transcription && !transcriptionService.transcriptionGeneratedSummary) {
@@ -166,6 +169,10 @@ export default function App() {
 
   const handleDarkModeToggle = () => {
     setDarkMode(!darkMode);
+  };
+
+  const handleSummarizationProviderChange = (newProvider) => {
+    setSelectedSummarizationProvider(newProvider);
   };
 
   const handleAdvancedOptionChange = (option, value) => {
@@ -283,6 +290,8 @@ export default function App() {
                 onDiarizationChange={(e) => handleAdvancedOptionChange('enableDiarization', e.target.checked)}
                 enableSummarization={transcriptionService.transcriptionOptions.enableSummarization} // This is for transcription's summary feature
                 onSummarizationChange={(e) => handleAdvancedOptionChange('enableSummarization', e.target.checked)}
+                selectedSummarizationProvider={selectedSummarizationProvider}
+                onSummarizationProviderChange={handleSummarizationProviderChange} // Pass the new handler
               />
             )}
           </div>

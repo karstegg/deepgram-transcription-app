@@ -23,6 +23,8 @@ const AdvancedOptionsPanel = ({
   onDiarizationChange,
   enableSummarization, // This is the "Generate Summary" checkbox in advanced options
   onSummarizationChange,
+  selectedSummarizationProvider,
+  onSummarizationProviderChange,
 }) => {
   return (
     <div className="space-y-4 pt-3 mt-3 border-t border-gray-200 dark:border-gray-700">
@@ -113,9 +115,27 @@ const AdvancedOptionsPanel = ({
             className="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded disabled:opacity-50"
           />
           <span className="ml-2 text-sm">
-            Generate Summary {isGeminiModel && '(via Gemini)'}
+            Generate Summary {isGeminiModel && !enableSummarization ? '' : (selectedSummarizationProvider === 'gemini' ? '(via Gemini)' : '(via Deepgram)')}
           </span>
         </label>
+
+        {enableSummarization && (
+          <div className="ml-6 mt-2 space-y-1">
+            <label htmlFor="summarization-provider-select" className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+              Summarization Provider
+            </label>
+            <select
+              id="summarization-provider-select"
+              value={selectedSummarizationProvider}
+              onChange={(e) => onSummarizationProviderChange(e.target.value)}
+              disabled={isLoading}
+              className="w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-primary focus:border-primary dark:bg-gray-700 disabled:opacity-50"
+            >
+              <option value="gemini">Gemini</option>
+              <option value="deepgram">Deepgram</option>
+            </select>
+          </div>
+        )}
       </div>
     </div>
   );
