@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import sseRoutes from './routes/sseRoutes.js';
 import transcriptionRoutes from './routes/transcriptionRoutes.js';
 import summarizationRoutes from './routes/summarizationRoutes.js';
+import gcsRoutes from './routes/gcsRoutes.js'; // Added for GCS functionality
 
 // Import UPLOADS_DIR_PATH from multerUpload.js to log its path and ensure it's evaluated.
 // The actual creation and management of the uploads directory is handled within multerUpload.js.
@@ -37,6 +38,7 @@ console.log(`Uploads directory is managed by multerUpload.js and located at: ${U
 app.use(sseRoutes);
 app.use(transcriptionRoutes);
 app.use(summarizationRoutes);
+app.use('/api/gcs', gcsRoutes); // Mount GCS routes under /api/gcs
 
 // Basic error handler (can be expanded as needed)
 app.use((err, req, res, next) => {

@@ -10,12 +10,22 @@ import ffprobe from 'ffprobe-static';
 import { UPLOADS_DIR_NAME, GEMINI_MODEL_NAME } from '../config/config.js'; // Added GEMINI_MODEL_NAME
 import { sendSseMessage, closeSseConnection } from '../services/sseService.js';
 
+import { Storage } from '@google-cloud/storage';
+
 // SDK clients are now imported from services
 import { transcribeAudioFile } from '../services/deepgramService.js';
 import { generateGeminiContent, getGeminiModelInstance } from '../services/geminiService.js'; // getGeminiModelInstance for checking if summarization is possible
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const storage = new Storage();
+const bucketName = process.env.GCS_BUCKET_NAME;
+
+if (!bucketName) {
+  console.error('CRITICAL ERROR: GCS_BUCKET_NAME is not set in environment variables. GCS operations will fail.');
+  // This module might still load, but GCS-dependent operations will throw errors.
+}
 const uploadsDir = path.join(__dirname, '..', UPLOADS_DIR_NAME); // Correct path from controller
 
 // Track active processes for cancellation, moved from server.js
@@ -301,24 +311,84 @@ const processTranscription = async (clientId, filePath, originalName, diarizeEna
 };
 
 
-export const handleTranscriptionRequest = (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded.' });
-    }
-    const clientId = uuidv4();
-    const filePath = req.file.path;
-    const originalName = req.file.originalname;
-    const diarizeEnabled = req.body.diarize === 'true' || req.body.enableDiarization === 'true';
-    const summarizeEnabled = req.body.summarize === 'true' || req.body.enableSummarization === 'true';
-    const model = req.body.model || 'nova-2'; // Default to nova-2 if not specified
-    const chunkSizeMB = model.startsWith('gemini-') ? null : (parseInt(req.body.chunkSizeMB, 10) || 10);
+export const handleTranscriptionRequest = async (req, res) => {
+    const { 
+        gcsObjectName, 
+        originalName: clientOriginalName, // Renamed to avoid conflict with any local originalName variable
+        diarize, 
+        enableDiarization, 
+        summarize, 
+        enableSummarization, 
+        model: modelFromReq, 
+        chunkSizeMB: chunkSizeMBFromReq 
+    } = req.body;
 
-    console.log(`[${clientId}] Received file: ${originalName}, Path: ${filePath}, Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, ChunkTargetMB: ${chunkSizeMB ?? 'N/A'}. Starting async processing.`);
+    if (!gcsObjectName) {
+        return res.status(400).json({ error: 'gcsObjectName is required in the request body.' });
+    }
+    if (!bucketName) {
+        console.error(`[transcriptionController] GCS_BUCKET_NAME is not configured. Cannot process GCS object.`);
+        return res.status(500).json({ error: 'Server configuration error related to GCS.' });
+    }
+
+    const clientId = uuidv4();
+    const tempGcsDownloadsDir = path.join(uploadsDir, 'gcs_temp_downloads');
     
-    // Call the main processing function
-    processTranscription(clientId, filePath, originalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMB);
-    
-    res.json({ clientId });
+    // Ensure the temporary directory for GCS downloads exists
+    if (!fs.existsSync(tempGcsDownloadsDir)){
+        try {
+            fs.mkdirSync(tempGcsDownloadsDir, { recursive: true });
+            console.log(`[${clientId}] Created temporary GCS download directory: ${tempGcsDownloadsDir}`);
+        } catch (mkdirError) {
+            console.error(`[${clientId}] Failed to create temporary GCS download directory ${tempGcsDownloadsDir}:`, mkdirError);
+            return res.status(500).json({ error: 'Failed to create temporary storage for file processing.' });
+        }
+    }
+
+    // Use a unique name for the local temporary file to avoid conflicts if multiple requests process the same gcsObjectName (though unlikely with clientId)
+    const localTempFileName = `${clientId}-${path.basename(gcsObjectName)}`;
+    const localTempFilePath = path.join(tempGcsDownloadsDir, localTempFileName);
+
+    try {
+        console.log(`[${clientId}] Attempting to download gs://${bucketName}/${gcsObjectName} to ${localTempFilePath}`);
+        sendSseMessage(clientId, 'status', { message: `Downloading file from secure storage...` });
+
+        await storage.bucket(bucketName).file(gcsObjectName).download({ destination: localTempFilePath });
+        
+        console.log(`[${clientId}] Successfully downloaded ${gcsObjectName} to ${localTempFilePath}.`);
+        sendSseMessage(clientId, 'status', { message: `File downloaded. Starting transcription process...` });
+
+        const diarizeEnabled = diarize === 'true' || enableDiarization === 'true';
+        const summarizeEnabled = summarize === 'true' || enableSummarization === 'true';
+        const model = modelFromReq || 'nova-2'; // Default to nova-2 if not specified
+        const chunkSizeMB = model.startsWith('gemini-') ? null : (parseInt(chunkSizeMBFromReq, 10) || 10);
+        
+        // Use originalName from request if provided, otherwise derive from gcsObjectName (stripping UUID if present)
+        const effectiveOriginalName = clientOriginalName || path.basename(gcsObjectName).substring(path.basename(gcsObjectName).indexOf('-') + 1);
+
+        console.log(`[${clientId}] Processing downloaded file: ${effectiveOriginalName}, Path: ${localTempFilePath}, Diarize: ${diarizeEnabled}, Summarize: ${summarizeEnabled}, Model: ${model}, ChunkTargetMB: ${chunkSizeMB ?? 'N/A'}. Starting async processing.`);
+        
+        // processTranscription will handle deleting localTempFilePath in its 'finally' block
+        processTranscription(clientId, localTempFilePath, effectiveOriginalName, diarizeEnabled, summarizeEnabled, model, chunkSizeMB);
+        
+        res.json({ clientId });
+
+    } catch (error) {
+        console.error(`[${clientId}] Error during GCS download or pre-processing for ${gcsObjectName}:`, error);
+        sendSseMessage(clientId, 'error', { message: `Failed to retrieve file from storage: ${error.message}` });
+        closeSseConnection(clientId); // Close SSE as the process won't start
+
+        // Clean up the partially downloaded file if it exists
+        if (fs.existsSync(localTempFilePath)) {
+            try {
+                fs.unlinkSync(localTempFilePath);
+                console.log(`[${clientId}] Cleaned up partially downloaded file ${localTempFilePath} after error.`);
+            } catch (cleanupError) {
+                console.error(`[${clientId}] Error cleaning up partially downloaded file ${localTempFilePath}:`, cleanupError);
+            }
+        }
+        res.status(500).json({ error: 'Failed to process file from GCS.' });
+    }
 };
 
 export const handleCancellationRequest = (req, res) => {

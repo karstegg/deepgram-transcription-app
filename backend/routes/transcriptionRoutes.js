@@ -5,7 +5,7 @@ import upload from '../middleware/multerUpload.js'; // Corrected path
 
 const router = express.Router();
 
-router.post('/transcribe', upload.single('audio'), handleTranscriptionRequest);
+router.post('/transcribe', handleTranscriptionRequest); // Removed upload.single('audio')
 router.post('/cancel/:clientId', handleCancellationRequest);
 
 export default router;
