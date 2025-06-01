@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Sun, Moon } from 'lucide-react'; // Only icons used directly in App.js
+import React, { useState, useEffect } from 'react';
+// import { Sun, Moon } from 'lucide-react'; // Only icons used directly in App.js
+import { useAuth } from './contexts/AuthContext';
 
 // Components
 import FileUploadArea from './components/FileUploadArea';
@@ -32,6 +33,7 @@ import '@fontsource/jetbrains-mono';
 // import './App.css'; // Assuming App.css might still have some global styles or is cleaned up separately
 
 export default function App() {
+  const { currentUser, isLoadingAuth, signInWithGoogle, signOutUser } = useAuth();
   // === Local App State ===
   const [darkMode, setDarkMode] = useState(true);
   const [activeTab, setActiveTab] = useState(DEFAULT_ACTIVE_TAB);
@@ -98,7 +100,7 @@ export default function App() {
     }
   }, [
     transcriptionService.isTranscribing, transcriptionService.progressMessage, transcriptionService.progress,
-    summarizationService.isSummarizing, summarizationService.summarizationProgressMessage, summarizationService.summarizationProgress,
+    summarizationService.isSummarizing, summarizationService.summarizationProgressMessage, summarizationService.summarizationProgress, summarizationService.progress, summarizationService.progressMessage,
     summarizationService.summary, appLevelError
   ]);
   
@@ -244,7 +246,28 @@ export default function App() {
       <header className="border-b border-gray-200 dark:border-gray-700">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
           <h1 className="text-2xl font-semibold text-primary">Audio/Video Transcription</h1>
-          {/* Theme toggle can also be placed here if desired */}
+          <div className="flex items-center"> {/* Auth UI Wrapper */}
+              {isLoadingAuth ? (
+                <p className="text-sm text-gray-600 dark:text-gray-400">Loading user...</p>
+              ) : currentUser ? (
+                <div className="flex items-center space-x-2">
+                  <p className="text-sm">Hi, {currentUser.displayName || currentUser.email}</p>
+                  <button
+                    onClick={signOutUser}
+                    className="px-3 py-1.5 text-sm bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors"
+                  >
+                    Sign Out
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={signInWithGoogle}
+                  className="px-3 py-1.5 text-sm bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors"
+                >
+                  Sign in with Google
+                </button>
+              )}
+            </div>
         </div>
       </header>
 

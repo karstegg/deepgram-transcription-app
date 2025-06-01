@@ -18,6 +18,7 @@ A web application for transcribing audio and video files using different AI mode
 *   **Transcript Actions:** Buttons to copy the full output (transcript + summary) or save it as a `.txt` file.
 *   **Reset/Cancel:** Button to reset the form or cancel frontend listening (backend cancellation not implemented).
 *   **Auto-Scroll:** Transcription text area automatically scrolls down.
+*   **User Authentication:** Sign in with Google via Firebase Authentication to manage user sessions.
 
 ## Tech Stack
 
@@ -30,6 +31,7 @@ A web application for transcribing audio and video files using different AI mode
     *   Deepgram API (Pre-recorded)
     *   Google Gemini API (`@google/generative-ai`)
 *   **Utilities:** FFMpeg (via `ffmpeg-static`), FFprobe (via `ffprobe-static`), `uuid`, `mime-types`, `dotenv`, Firebase CLI (`firebase-tools`)
+*   **Authentication:** Firebase Authentication (Google Sign-In)
 
 ## Setup
 
@@ -117,8 +119,8 @@ The following outlines the planned enhancements and future direction for the app
     *   Address GCR's request size limits (e.g., default 32MB) for large audio/video file uploads.
     *   **Potential Solutions:** Explore streaming uploads, client-side file chunking with server-side reassembly, or leveraging Google Cloud Storage (GCS) as an intermediary for uploads.
 4.  **Verify User Account Management & Deploy to Production:**
-    *   If user account management features are planned or implemented, ensure they are robust and working correctly.
-    *   Prepare for and execute deployment to a designated production environment.
+    *   User account management (Google Sign-In via Firebase) has been implemented on the frontend.
+    *   Thoroughly test and prepare for deployment to a designated production environment.
 5.  **Structured Summarization:**
     *   Enhance the summarization feature to allow users to define or select predefined sections/headings (e.g., for meeting minutes: "Action Items," "Decisions," "Key Discussion Points"), guiding the AI to produce more structured output.
 6.  **Update Existing Documents with New Transcripts:**

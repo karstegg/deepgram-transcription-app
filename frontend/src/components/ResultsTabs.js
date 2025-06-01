@@ -33,7 +33,7 @@ const ResultsTabs = ({
           // Disable summary tab if loading, or if no summary is available yet.
           // App.js has logic to auto-switch to transcript tab if summary is not available during transcription.
           // This disabled state here is a direct UI feedback.
-          disabled={isLoading || !isSummaryAvailable && activeTab !== 'summary'}
+          disabled={isLoading || (!isSummaryAvailable && activeTab !== 'summary')}
         >
           Summary
         </button>
