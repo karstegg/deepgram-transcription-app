@@ -1,5 +1,18 @@
 ## 01 June 2025
 
+*   **Implemented Firebase User Authentication (Google Sign-In):**
+    *   **Branch:** `development-refactor`
+    *   **Context & UI:** Created `frontend/src/contexts/AuthContext.js` to manage Firebase authentication state (currentUser, isLoadingAuth) and provide `signInWithGoogle` and `signOutUser` functions. Integrated sign-in/sign-out UI elements into the header of `frontend/src/App.js`.
+    *   **Dependencies:** Installed the `firebase` SDK in the frontend project.
+    *   **Configuration:** Added `localhost` and `127.0.0.1` to the authorized domains in the Firebase project settings to resolve `auth/unauthorized-domain` errors during local development.
+    *   **Code Quality:** Addressed ESLint warnings that arose after the implementation (unused imports, missing useEffect dependencies, mixed operators).
+    *   **Documentation:** Updated `README.md` to include details about the new authentication feature and added Firebase Authentication to the tech stack.
+    *   **Outcome:** Users can now sign in and out of the application using their Google accounts. User sessions persist across page refreshes. All changes have been committed and pushed to the `development-refactor` branch.
+
+---
+
+## 01 June 2025
+
 *   **Resolved Critical GCS Upload Failure and Backend 500 Errors:**
     *   **Problem:** Users were experiencing an issue where audio files uploaded from the frontend were not appearing in the Google Cloud Storage (GCS) bucket. This subsequently caused the backend to return 500 errors during transcription attempts because the target audio file was missing (GCS 404).
     *   **Investigation:**
