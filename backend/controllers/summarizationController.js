@@ -8,15 +8,13 @@ import { generateTextOnly, getGeminiModelInstance } from '../services/geminiServ
 
 export const handleSummarizationRequest = (req, res) => {
     const clientId = uuidv4();
-    const { existingTranscription } = req.body;
 
-    if (!existingTranscription) {
-        // Though the original route had upload.single('audio'), the core logic depends on existingTranscription.
-        // If file upload is still desired for this route, it should be handled by multer middleware
-        // before this controller, and then this controller would decide whether to use uploaded audio
-        // or existingTranscription. For now, focusing on the provided text.
+    // Check if req.body exists and then if existingTranscription is in req.body
+    if (!req.body || !req.body.existingTranscription) {
         return res.status(400).json({ error: 'No existingTranscription provided.' });
     }
+    // Only destructure if we know existingTranscription exists
+    const { existingTranscription } = req.body;
 
     console.log(`[${clientId}] Received summarization request for existing transcription (${existingTranscription.length} chars).`);
 

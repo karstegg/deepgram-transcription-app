@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios'; // Placeholder for actual API service
+import * as apiService from '../services/apiService';
 
 // This should ideally come from a constants file or environment variables
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'https://deepgram-backend-upcbdbi5la-uc.a.run.app';
@@ -92,10 +93,43 @@ const useTranscriptionService = (initialHookOptions = {}) => {
       formData.append('enableSummarization', currentOpts.enableSummarization); // Duplicate for backend compatibility
       formData.append('chunkSizeMB', currentOpts.chunkSizeMB);
 
-      // TODO: Replace with call to an apiService module, e.g., apiService.transcribe(formData)
-      const response = await axios.post(`${BACKEND_URL}/transcribe`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      // Step 1: Get a signed URL for GCS upload
+      setProgressMessage('Preparing file upload...');
+      const { signedUrl: url, gcsObjectName } = await apiService.getSignedUrl(
+        selectedFile.name,
+        selectedFile.type
+      );
+
+      // Step 2: Upload the file to GCS with progress tracking
+      setProgressMessage('Uploading file to storage...');
+      await apiService.uploadToGcs(
+        url,
+        selectedFile,
+        (progress) => {
+          setProgress(Math.floor(progress * 0.9)); // Reserve 10% for transcription
+          setProgressMessage(`Uploading: ${progress}%`);
+        }
+      );
+
+      // Step 3: Start the transcription with the GCS object name
+      setProgress(90);
+      setProgressMessage('Starting transcription...');
+      const response = await axios.post(
+        `${BACKEND_URL}/transcribe`,
+        {
+          gcsObjectName,
+          originalName: selectedFile.name,
+          model: currentOpts.model,
+          diarize: currentOpts.enableDiarization,
+          summarize: currentOpts.enableSummarization,
+          chunkSizeMB: currentOpts.chunkSizeMB,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
 
       const clientId = response.data.clientId;
       currentClientIdRef.current = clientId;

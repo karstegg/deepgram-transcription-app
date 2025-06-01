@@ -16,6 +16,7 @@
     "@deepgram/sdk": "^3.11.3",
     "@fontsource/inter": "^5.2.5",
     "@fontsource/jetbrains-mono": "^5.2.5",
+    "@google-cloud/storage": "^7.16.0",
     "@google/generative-ai": "^0.24.0",
     "autoprefixer": "^10.4.21",
     "cors": "^2.8.5",
