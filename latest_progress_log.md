@@ -7,43 +7,9 @@
         *   IAM permissions for the Cloud Run service account (including Storage Object Admin/Viewer) were verified and appeared correct.
         *   Browser developer tools (Network tab) revealed that the frontend's `PUT` request, intended for GCS, was incorrectly being sent to `https://deepgram-transcription-app.web.app/undefined` instead of the GCS signed URL.
     *   **Root Cause:** A variable name mismatch was identified in `frontend/src/hooks/useTranscriptionService.js`. The backend returns an object with a `signedUrl` key (e.g., `{ signedUrl: "...", gcsObjectName: "..." }`). However, the frontend code was attempting to destructure it using `const { url, gcsObjectName } = await apiService.getSignedUrl(...)`. This resulted in the `url` variable being `undefined`.
-    *   **Fix:** Corrected the destructuring in `frontend/src/hooks/useTranscriptionService.js` to `const { signedUrl: url, gcsObjectName } = await apiService.getSignedUrl(...)`.
-    *   **Deployment:** The fix was deployed to the frontend on Firebase Hosting.
-    *   **Outcome:** File uploads to GCS are now successful, and backend transcription requests no longer result in 500 errors due to missing files. The end-to-end transcription flow is functional.
-*   **Documentation Update (`latest_progress_log.md`):**
-    *   Documented the GCS upload fix details.
-    *   Updated links to other documentation files ([CODE_DOCUMENTATION.md](cci:7://file:///c:/Users/10064957/Documents/OneDrive/AI%20Projects/Windsurf%20Projects/deepgram-transcription-app/CODE_DOCUMENTATION.md:0:0-0:0), [DEPLOY_RUN_INSTRUCTIONS_GCP.md](cci:7://file:///c:/Users/10064957/Documents/OneDrive/AI%20Projects/Windsurf%20Projects/deepgram-transcription-app/DEPLOY_RUN_INSTRUCTIONS_GCP.md:0:0-0:0), [frontend-refactor-instructions.md](cci:7://file:///c:/Users/10064957/Documents/OneDrive/AI%20Projects/Windsurf%20Projects/deepgram-transcription-app/frontend-refactor-instructions.md:0:0-0:0)) for clarity.
-*   **Git Branch Merging:**
-    *   Merged `Jule-fix-summarisation-error` (containing the GCS fix) into `feature/BiggerFileHandling`.
-    *   Pushed updated `feature/BiggerFileHandling` to remote.
-
-## 26 May 2025
-
-*   **Branch Management & Feature Exploration (`feature/BiggerFileHandling`):**
-    *   Switched to `feature/BiggerFileHandling` branch.
-    *   Confirmed this branch is up-to-date with `development-refactor` (which includes the completed backend refactor Phase 2).
-    *   Successfully started local backend and frontend servers on `feature/BiggerFileHandling` and verified basic functionality.
-*   **Deepgram Language Support Research:**
-    *   Investigated Deepgram's language support for Afrikaans (language code `af`).
-    *   **Finding:** Afrikaans is not currently supported by Deepgram's transcription models (Nova-3, Nova-2, or Legacy).
-*   **Large File Summarization Strategy (Gemini `gemini-1.5-flash-latest`):**
-    *   **Context:** Addressed potential issues with summarizing transcripts from very large audio files that might exceed Gemini's input token limits.
-    *   **Research & Findings:**
-        *   Confirmed Gemini `gemini-1.5-flash-latest` token limits: ~1,048,576 input, ~8,192 output.
-        *   User performed a test summarization with a large file, and the current synchronous approach (direct call to Gemini) **successfully processed it**.
-        *   Developed a comprehensive asynchronous processing plan as a contingency for even larger files or future needs. This plan involves Google Cloud Run Jobs, Google Cloud Storage (GCS) for transcript storage, Firestore for job tracking, chunking of transcripts, and iterative summarization. (Details saved in Memory ID: `244948a8-c737-4153-86b0-cbf53617d399`).
-    *   **Decision:** The implementation of the advanced asynchronous summarization plan is **deferred**. It will be revisited if actual token limits are hit or if processing latency for very large files becomes a concern.
-*   **Branch Cleanup Identification:**
-    *   Identified the `BackendRefactorPhase2` branch as ready for deletion, as its changes have been merged into `development-refactor` (and subsequently into `feature/BiggerFileHandling`).
-*   **Documentation Update (`development-refactor` branch):**
-    *   Switched back to the `development-refactor` branch.
-    *   Updated `CODE_DOCUMENTATION.md` to reflect:
-        *   The new modular backend structure (routes, controllers, services, middleware).
-        *   Revised description of `server.js`.
-        *   Clarified communication flow for the separate `/summarize` endpoint.
-        *   Details about required `.env` keys (`DEEPGRAM_API_KEY`, `GEMINI_API_KEY`).
-        *   Information about the `REACT_APP_BACKEND_URL` in the frontend's `start` script for local development.
-    *   Updated `latest_progress_log.md` with today's activities.
+    *   **Fix:** The destructuring in `frontend/src/hooks/useTranscriptionService.js` was corrected to `const { signedUrl: url, gcsObjectName } = await apiService.getSignedUrl(...)`. This correctly assigns the GCS signed URL to the `url` variable used in the `axios.put` call.
+    *   **Deployment:** The frontend application was rebuilt (`npm run build`) and redeployed to Firebase Hosting.
+    *   **Outcome:** After the fix and redeployment, files are now successfully uploaded to the GCS bucket using the signed URL. The subsequent transcription process works correctly without 500 errors related to missing files. The application's core upload and transcription flow is now fully functional.
 
 ## 25 May 2025
 
@@ -67,9 +33,9 @@
     *   **Outcome:** The `development-refactor` branch is now updated with the successfully refactored frontend. The application is live and functional.
 *   **Documentation Alignment & Refactor Preparation Review:**
     *   Verified the current frontend file structure in the `development` branch. Confirmed that `frontend/src/` does not contain `components/`, `constants/`, `hooks/`, or `services/` subdirectories and that `frontend/src/App.js` handles the majority of the frontend logic, including API interactions. This clarifies that previous assumptions about a more refactored frontend state were incorrect for this branch.
-    *   Updated `CODE_DOCUMENTATION.md`: The folder structure diagram within this file, specifically for `frontend/src/`, has been corrected to list the actual files present (e.g., `App.js`, `index.js`, `firebaseConfig.js`) and remove placeholders or incorrect references to a more granular structure.
-    *   Updated `DEPLOY_RUN_INSTRUCTIONS_GCP.md`: Added a note clarifying the current state of the frontend (logic primarily in `App.js`) and enhanced the backend deployment section to provide clearer, more robust instructions for managing environment variables on Google Cloud Run, detailing the behavior of `gcloud run deploy` with and without the `--set-env-vars` flag.
-    *   Acknowledged that `frontend-refactor-instructions.md` (created previously by the user) might require review to ensure its guidance aligns with the actual, less-refactored starting state of the frontend in this branch before commencing a new refactoring effort.
+    *   Updated [CODE_DOCUMENTATION.md](cci:7://file:///c:/Users/10064957/Documents/OneDrive/AI%20Projects/Windsurf%20Projects/deepgram-transcription-app/CODE_DOCUMENTATION.md:0:0-0:0): The folder structure diagram within this file, specifically for `frontend/src/`, has been corrected to list the actual files present (e.g., `App.js`, `index.js`, `firebaseConfig.js`) and remove placeholders or incorrect references to a more granular structure.
+    *   Updated [DEPLOY_RUN_INSTRUCTIONS_GCP.md](cci:7://file:///c:/Users/10064957/Documents/OneDrive/AI%20Projects/Windsurf%20Projects/deepgram-transcription-app/DEPLOY_RUN_INSTRUCTIONS_GCP.md:0:0-0:0): Added a note clarifying the current state of the frontend (logic primarily in `App.js`) and enhanced the backend deployment section to provide clearer, more robust instructions for managing environment variables on Google Cloud Run, detailing the behavior of `gcloud run deploy` with and without the `--set-env-vars` flag.
+    *   Acknowledged that [frontend-refactor-instructions.md](cci:7://file:///c:/Users/10064957/Documents/OneDrive/AI%20Projects/Windsurf%20Projects/deepgram-transcription-app/frontend-refactor-instructions.md:0:0-0:0) (created previously by the user) might require review to ensure its guidance aligns with the actual, less-refactored starting state of the frontend in this branch before commencing a new refactoring effort.
 *   **Objective:** To ensure all key documentation accurately reflects the current state of the `development` branch, providing a solid and correct baseline for any future development or refactoring work.
 
 ## 20 May 2025
@@ -80,12 +46,7 @@ You have an audio/video transcription and summarization application.
 The frontend is a React app, and the backend is Node.js/Express.
 It uses Deepgram for transcription and Google Gemini for summarization.
 The application is deployed with the frontend on Firebase Hosting and the backend on Google Cloud Run.
-Recent Debugging Efforts (on the developm
-<truncated 1445 bytes>
-nvironment variables (ideally via Secret Manager) in the Google Cloud Run service configuration for the backend to function. Deploying without these explicitly set means the service relies on any pre-existing configuration for those variables. An error ('projects/deepgram-transcription-app/secrets/deepgram-api-key' is not a valid secret name) occurred when trying to deploy with specific secret names, indicating an issue with either the provided secret names or permissions.
-Current Status:
-
-You decided to discard the changes made in the development-refactor branch during our debugging session.
+Recent Debugging Efforts (on the development-refactor branch during our debugging session.
 You have now switched back to the development branch.
 Your local development branch is synchronized with the remote origin/development branch.
 You intend to start the refactoring process anew from the development branch, possibly using a different code assistant.
@@ -93,4 +54,4 @@ The development branch is currently considered the stable, working version (when
 
 ## 22 May 2025
 
-Successfully deployed the frontend application to Firebase Hosting and the backend to Google Cloud Run. Resolved frontend build issues on Windows by integrating `cross-env` into the build script. Configured Firebase hosting (`firebase.json`) to correctly point to the `frontend/build` directory. Debugged and fixed API call issues in the deployed frontend (`frontend/src/App.js`), ensuring all requests (transcription, summarization, and SSE progress updates) correctly target the live backend URL (`https://deepgram-backend-upcbdbi5la-uc.a.run.app`). All changes were successfully committed to the local repository and pushed to the `development` branch on GitHub. Updated project documentation (`README.md`) with current deployment details, live URLs, and the newly defined project roadmap. Created a `Refactor_Instructions_For_Jules.md` file to provide detailed guidance for upcoming refactoring of `App.js` and `server.js`. Established and saved a project roadmap to memory for future development planning.
+Successfully deployed the frontend application to Firebase Hosting and the backend to Google Cloud Run. Resolved frontend build issues on Windows by integrating `cross-env` into the build script. Configured Firebase hosting (`firebase.json`) to correctly point to the `frontend/build` directory. Debugged and fixed API call issues in the deployed frontend (`frontend/src/App.js`), ensuring all requests (transcription, summarization, and SSE progress updates) correctly target the live backend URL (`https://deepgram-backend-upcbdbi5la-uc.a.run.app`). All changes were successfully committed to the local repository and pushed to the `development` branch on GitHub. Updated project documentation ([README.md](cci:7://file:///c:/Users/10064957/Documents/OneDrive/AI%20Projects/Windsurf%20Projects/deepgram-transcription-app/README.md:0:0-0:0)) with current deployment details, live URLs, and the newly defined project roadmap. Created a [Refactor_Instructions_For_Jules.md](cci:7://file:///c:/Users/10064957/Documents/OneDrive/AI%20Projects/Windsurf%20Projects/deepgram-transcription-app/Refactor_Instructions_For_Jules.md:0:0-0:0) file to provide detailed guidance for upcoming refactoring of `App.js` and `server.js`. Established and saved a project roadmap to memory for future development planning.
