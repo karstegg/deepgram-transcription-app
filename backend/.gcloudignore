@@ -1,0 +1,17 @@
+# Files and directories to ignore when deploying to Google Cloud.
+
+# Default gcloudignore patterns for Node.js (good to have explicitly)
+.gcloudignore
+.git
+.gitignore
+node_modules/
+
+# Custom application-specific ignores
+uploads/
+.env
+test.wav
+npm-debug.log*
+*.log
+
+# Docker related files should be present for Cloud Build
+# but are excluded from the Docker image itself via .dockerignore
