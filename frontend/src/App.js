@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-// import { Sun, Moon } from 'lucide-react'; // Only icons used directly in App.js
 import { useAuth } from './contexts/AuthContext';
 
 // Components
@@ -12,28 +11,26 @@ import TranscriptionPanel from './components/TranscriptionPanel';
 import SummaryPanel from './components/SummaryPanel';
 import ErrorDisplay from './components/ErrorDisplay';
 
-// Hooks
-import useTranscriptionService from './hooks/useTranscriptionService';
+// Hooks - Using direct streaming instead of GCS-based transcription
+import useDirectStreamingService from './hooks/useDirectStreamingService';
 import useSummarizationService from './hooks/useSummarizationService';
 
 // Constants
 import {
   DEFAULT_MODEL,
-  DEFAULT_CHUNK_SIZE_MB,
   TAB_IDS,
   DEFAULT_ACTIVE_TAB,
-  AVAILABLE_MODELS, // Needed for AdvancedOptionsPanel if not passed through hook
-  CHUNK_SIZES_MB    // Needed for AdvancedOptionsPanel if not passed through hook
+  AVAILABLE_MODELS,
+  CHUNK_SIZES_MB
 } from './constants/constants';
 
 // CSS
 import '@fontsource/inter';
 import '@fontsource/jetbrains-mono';
-// App.css can be kept for global styles not covered by Tailwind component classes
-// import './App.css'; // Assuming App.css might still have some global styles or is cleaned up separately
 
 export default function App() {
   const { currentUser, isLoadingAuth, signInWithGoogle, signOutUser } = useAuth();
+  
   // === Local App State ===
   const [darkMode, setDarkMode] = useState(true);
   const [activeTab, setActiveTab] = useState(DEFAULT_ACTIVE_TAB);
@@ -45,15 +42,14 @@ export default function App() {
   const [appLevelProgress, setAppLevelProgress] = useState(0);
 
   // === Initialize Hooks ===
-  const transcriptionService = useTranscriptionService({
+  const streamingService = useDirectStreamingService({
     defaultModel: DEFAULT_MODEL,
-    defaultChunkSize: DEFAULT_CHUNK_SIZE_MB,
   });
 
   const summarizationService = useSummarizationService();
 
   // === Derived State ===
-  const overallIsLoading = transcriptionService.isTranscribing || summarizationService.isSummarizing;
+  const overallIsLoading = streamingService.isStreaming || summarizationService.isSummarizing;
 
   // === Effects ===
   // Dark mode effect
@@ -67,102 +63,89 @@ export default function App() {
 
   // Consolidate errors from hooks
   useEffect(() => {
-    if (transcriptionService.transcriptionError) {
-      setAppLevelError(transcriptionService.transcriptionError);
+    if (streamingService.error) {
+      setAppLevelError(streamingService.error);
     } else if (summarizationService.summarizationError) {
       setAppLevelError(summarizationService.summarizationError);
     } else {
-      setAppLevelError(''); // Clear if no errors from hooks
+      setAppLevelError('');
     }
-  }, [transcriptionService.transcriptionError, summarizationService.summarizationError]);
+  }, [streamingService.error, summarizationService.summarizationError]);
 
   // Consolidate progress messages and progress from hooks
   useEffect(() => {
-    if (transcriptionService.isTranscribing) {
-      setAppLevelProgressMessage(transcriptionService.progressMessage);
-      setAppLevelProgress(transcriptionService.progress);
+    if (streamingService.isStreaming) {
+      setAppLevelProgressMessage(streamingService.progressMessage);
+      setAppLevelProgress(streamingService.progress);
     } else if (summarizationService.isSummarizing) {
       setAppLevelProgressMessage(summarizationService.progressMessage);
       setAppLevelProgress(summarizationService.progress);
     } else {
-      // If neither is loading, show the "last active" message or clear
-      // This logic can be refined: e.g. show transcription completion message
-      // even if summarization starts immediately after.
-      // For now, prioritize the active process or the last message from transcription/summarization hook.
-      if (transcriptionService.progressMessage && transcriptionService.progress === 100 && !summarizationService.summary) {
-         setAppLevelProgressMessage(transcriptionService.progressMessage);
+      if (streamingService.progressMessage && streamingService.progress === 100 && !summarizationService.summary) {
+         setAppLevelProgressMessage(streamingService.progressMessage);
       } else if (summarizationService.summarizationProgressMessage && summarizationService.summarizationProgress === 100) {
          setAppLevelProgressMessage(summarizationService.summarizationProgressMessage);
       }
-      // else if (!appLevelError) { // Avoid clearing error-related messages if an error just occurred
-      //   setAppLevelProgressMessage(''); // Clear if no active process and no final message shown
-      // }
     }
   }, [
-    transcriptionService.isTranscribing, transcriptionService.progressMessage, transcriptionService.progress,
-    summarizationService.isSummarizing, summarizationService.summarizationProgressMessage, summarizationService.summarizationProgress, summarizationService.progress, summarizationService.progressMessage,
+    streamingService.isStreaming, streamingService.progressMessage, streamingService.progress,
+    summarizationService.isSummarizing, summarizationService.summarizationProgressMessage, summarizationService.summarizationProgress,
     summarizationService.summary, appLevelError
   ]);
   
-  // Auto-switch to summary tab if summary becomes available (from either service)
+  // Auto-switch to summary tab if summary becomes available
   useEffect(() => {
-    if (summarizationService.summary || transcriptionService.transcriptionGeneratedSummary) {
+    if (summarizationService.summary) {
       setActiveTab(TAB_IDS.SUMMARY);
     }
-  }, [summarizationService.summary, transcriptionService.transcriptionGeneratedSummary]);
+  }, [summarizationService.summary]);
 
-  // Auto-switch to transcript tab if a new transcription starts and summary tab is active but empty
-  // (mimicking original App.js behavior)
+  // Auto-switch to transcript tab if streaming starts and summary tab is active but empty
   useEffect(() => {
-    if (transcriptionService.isTranscribing && activeTab === TAB_IDS.SUMMARY && !summarizationService.summary && !transcriptionService.transcriptionGeneratedSummary) {
+    if (streamingService.isStreaming && activeTab === TAB_IDS.SUMMARY && !summarizationService.summary) {
       setActiveTab(TAB_IDS.TRANSCRIPT);
     }
-  }, [transcriptionService.isTranscribing, activeTab, summarizationService.summary, transcriptionService.transcriptionGeneratedSummary]);
-
+  }, [streamingService.isStreaming, activeTab, summarizationService.summary]);
 
   // === Event Handlers ===
   const handleFileSelectForApp = (file) => {
-    transcriptionService.handleFileSelect(file);
-    summarizationService.resetSummarizationState(); // Reset summary if new file selected
-    setActiveTab(TAB_IDS.TRANSCRIPT); // Switch to transcript tab on new file
-    setAppLevelError(''); // Clear any previous errors
-    setAppLevelProgressMessage(''); // Clear previous messages
+    streamingService.handleFileSelect(file);
+    summarizationService.resetSummarizationState();
+    setActiveTab(TAB_IDS.TRANSCRIPT);
+    setAppLevelError('');
+    setAppLevelProgressMessage('');
   };
 
   const handleStartTranscriptionProcess = () => {
-    // Reset summarization if starting new transcription
     summarizationService.resetSummarizationState();
     setAppLevelError('');
     setAppLevelProgressMessage('');
     setActiveTab(TAB_IDS.TRANSCRIPT);
-    transcriptionService.startTranscription(); // Uses options from its internal state
+    streamingService.startStreaming();
   };
 
   const handleStartSummarizationProcess = () => {
-    if (!transcriptionService.transcription && !transcriptionService.transcriptionGeneratedSummary) {
+    if (!streamingService.transcription) {
       setAppLevelError('Please transcribe a file first to generate a summary.');
       return;
     }
     setAppLevelError('');
     setAppLevelProgressMessage('');
-    // Use main transcription if available, otherwise use transcription-generated summary as source
-    const textToSummarize = transcriptionService.transcription || transcriptionService.transcriptionGeneratedSummary;
-    summarizationService.startSummarization(textToSummarize);
+    summarizationService.startSummarization(streamingService.transcription);
   };
   
   const handleCancelResetProcess = () => {
-    if (transcriptionService.isTranscribing) {
-      transcriptionService.cancelTranscription();
+    if (streamingService.isStreaming) {
+      streamingService.cancelStreaming();
     } else if (summarizationService.isSummarizing) {
       summarizationService.cancelSummarization();
     } else {
       // Full Reset
-      transcriptionService.resetTranscriptionState();
+      streamingService.resetState();
       summarizationService.resetSummarizationState();
       setActiveTab(DEFAULT_ACTIVE_TAB);
       setAppLevelError('');
       setAppLevelProgressMessage('');
-      // fileInputRef might need to be handled if still used directly (it's in FileUploadArea now)
     }
   };
 
@@ -171,19 +154,19 @@ export default function App() {
   };
 
   const handleAdvancedOptionChange = (option, value) => {
-    transcriptionService.updateTranscriptionOptions({ [option]: value });
+    streamingService.updateStreamingOptions({ [option]: value });
   };
   
   const clearAppError = () => {
     setAppLevelError('');
-    transcriptionService.setTranscriptionError('');
+    streamingService.setTranscriptionError('');
     summarizationService.setSummarizationError('');
   };
 
   const handleCopyContent = () => {
     const textToCopy = activeTab === TAB_IDS.SUMMARY 
-      ? (summarizationService.summary || transcriptionService.transcriptionGeneratedSummary)
-      : transcriptionService.transcription;
+      ? summarizationService.summary
+      : streamingService.transcription;
     
     if (!textToCopy) {
       setAppLevelError(`No ${activeTab} content available to copy.`);
@@ -205,8 +188,8 @@ export default function App() {
 
   const handleSaveContent = () => {
     const textToSave = activeTab === TAB_IDS.SUMMARY
-      ? (summarizationService.summary || transcriptionService.transcriptionGeneratedSummary)
-      : transcriptionService.transcription;
+      ? summarizationService.summary
+      : streamingService.transcription;
 
     if (!textToSave) {
       setAppLevelError(`No ${activeTab} content available to save.`);
@@ -219,8 +202,8 @@ export default function App() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       const fileNameSuffix = activeTab === TAB_IDS.SUMMARY ? 'summary' : 'transcript';
-      const baseFileName = transcriptionService.selectedFile 
-        ? transcriptionService.selectedFile.name.split('.').slice(0, -1).join('.') 
+      const baseFileName = streamingService.selectedFile 
+        ? streamingService.selectedFile.name.split('.').slice(0, -1).join('.') 
         : 'download';
       link.download = `${baseFileName}_${fileNameSuffix}.txt`;
       link.href = url;
@@ -238,15 +221,14 @@ export default function App() {
   };
   
   // Determine if the selected model is Gemini for AdvancedOptionsPanel
-  const isGeminiModel = transcriptionService.transcriptionOptions.model.startsWith('gemini-');
-
+  const isGeminiModel = streamingService.streamingOptions.model.startsWith('gemini-');
 
   return (
     <div className={`min-h-screen ${darkMode ? 'bg-dark text-light' : 'bg-light text-dark'}`}>
       <header className="border-b border-gray-200 dark:border-gray-700">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
           <h1 className="text-2xl font-semibold text-primary">Audio/Video Transcription</h1>
-          <div className="flex items-center"> {/* Auth UI Wrapper */}
+          <div className="flex items-center">
               {isLoadingAuth ? (
                 <p className="text-sm text-gray-600 dark:text-gray-400">Loading user...</p>
               ) : currentUser ? (
@@ -276,7 +258,7 @@ export default function App() {
           {/* Left Panel */}
           <div className="w-full lg:w-1/3 space-y-6">
             <FileUploadArea
-              selectedFile={transcriptionService.selectedFile}
+              selectedFile={streamingService.selectedFile}
               onFileSelect={handleFileSelectForApp}
               isLoading={overallIsLoading}
             />
@@ -285,8 +267,8 @@ export default function App() {
               onSummarization={handleStartSummarizationProcess}
               onCancelReset={handleCancelResetProcess}
               isLoading={overallIsLoading}
-              selectedFile={transcriptionService.selectedFile}
-              transcription={transcriptionService.transcription || transcriptionService.transcriptionGeneratedSummary} // Enable summary if any transcription exists
+              selectedFile={streamingService.selectedFile}
+              transcription={streamingService.transcription}
               showAdvancedOptions={showAdvancedOptions}
               onToggleAdvancedOptions={() => setShowAdvancedOptions(!showAdvancedOptions)}
             />
@@ -294,17 +276,17 @@ export default function App() {
               <AdvancedOptionsPanel
                 darkMode={darkMode}
                 onToggleDarkMode={handleDarkModeToggle}
-                selectedModel={transcriptionService.transcriptionOptions.model}
+                selectedModel={streamingService.streamingOptions.model}
                 onModelChange={(e) => handleAdvancedOptionChange('model', e.target.value)}
-                availableModels={AVAILABLE_MODELS} // Pass from constants
+                availableModels={AVAILABLE_MODELS}
                 isLoading={overallIsLoading}
                 isGeminiModel={isGeminiModel}
-                selectedChunkSize={transcriptionService.transcriptionOptions.chunkSizeMB}
-                onChunkSizeChange={(e) => handleAdvancedOptionChange('chunkSizeMB', parseInt(e.target.value, 10))}
-                chunkSizes={CHUNK_SIZES_MB} // Pass from constants
-                enableDiarization={transcriptionService.transcriptionOptions.enableDiarization}
+                selectedChunkSize={8} // Fixed for streaming
+                onChunkSizeChange={() => {}} // No-op for streaming
+                chunkSizes={CHUNK_SIZES_MB}
+                enableDiarization={streamingService.streamingOptions.enableDiarization}
                 onDiarizationChange={(e) => handleAdvancedOptionChange('enableDiarization', e.target.checked)}
-                enableSummarization={transcriptionService.transcriptionOptions.enableSummarization} // This is for transcription's summary feature
+                enableSummarization={streamingService.streamingOptions.enableSummarization}
                 onSummarizationChange={(e) => handleAdvancedOptionChange('enableSummarization', e.target.checked)}
               />
             )}
@@ -322,19 +304,19 @@ export default function App() {
               activeTab={activeTab}
               onTabChange={setActiveTab}
               isLoading={overallIsLoading}
-              isSummaryAvailable={!!(summarizationService.summary || transcriptionService.transcriptionGeneratedSummary)}
+              isSummaryAvailable={!!summarizationService.summary}
               transcriptionPanelSlot={
                 <TranscriptionPanel
-                  transcriptionText={transcriptionService.transcription}
-                  isLoading={transcriptionService.isTranscribing && !transcriptionService.transcription} // Show placeholder only if loading AND no text yet
+                  transcriptionText={streamingService.transcription}
+                  isLoading={streamingService.isStreaming && !streamingService.transcription}
                   onCopyTranscription={handleCopyContent}
                   onDownloadTranscription={handleSaveContent}
                 />
               }
               summaryPanelSlot={
                 <SummaryPanel
-                  summaryText={summarizationService.summary || transcriptionService.transcriptionGeneratedSummary}
-                  isLoading={(summarizationService.isSummarizing && !summarizationService.summary) || (transcriptionService.isTranscribing && transcriptionService.transcriptionOptions.enableSummarization && !transcriptionService.transcriptionGeneratedSummary) }
+                  summaryText={summarizationService.summary}
+                  isLoading={summarizationService.isSummarizing && !summarizationService.summary}
                   onCopySummary={handleCopyContent}
                   onDownloadSummary={handleSaveContent}
                 />
@@ -347,7 +329,7 @@ export default function App() {
       <footer className="border-t border-gray-200 dark:border-gray-700 py-4 mt-8">
         <div className="container mx-auto px-4 text-center text-sm text-gray-500 dark:text-gray-400">
           <p>
-            Powered by <a href="https://deepgram.com" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Deepgram</a> & <a href="https://ai.google.dev/" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Google Gemini</a>
+            Powered by <a href="https://deepgram.com" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Deepgram</a> Direct Streaming
           </p>
         </div>
       </footer>
