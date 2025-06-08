@@ -89,7 +89,7 @@ export default function App() {
     }
   }, [
     streamingService.isStreaming, streamingService.progressMessage, streamingService.progress,
-    summarizationService.isSummarizing, summarizationService.summarizationProgressMessage, summarizationService.summarizationProgress,
+    summarizationService.isSummarizing, summarizationService.progressMessage, summarizationService.progress, summarizationService.summarizationProgressMessage, summarizationService.summarizationProgress,
     summarizationService.summary, appLevelError
   ]);
   

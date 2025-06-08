@@ -13,7 +13,7 @@ import { sendSseMessage, closeSseConnection } from '../services/sseService.js';
 import { Storage } from '@google-cloud/storage';
 
 // SDK clients are now imported from services
-import { transcribeAudioFile } from '../services/deepgramService.js';
+import { transcribeAudioFile, getDeepgramClientInstance } from '../services/deepgramService.js';
 import { generateGeminiContent, getGeminiModelInstance } from '../services/geminiService.js'; // getGeminiModelInstance for checking if summarization is possible
 
 const __filename = fileURLToPath(import.meta.url);
@@ -30,6 +30,9 @@ const uploadsDir = path.join(__dirname, '..', UPLOADS_DIR_NAME); // Correct path
 
 // Track active processes for cancellation, moved from server.js
 const activeProcesses = {};
+const activeDeepgramLiveStreams = {}; // For chunked live transcription
+let isFinalChunkProcessed = {}; // Tracks if the final transcript has been sent for a client
+let accumulatedTranscripts = {}; // Stores accumulated transcripts per client
 
 // FFMpeg Chunking Function (moved from server.js)
 const splitMediaIntoAudioChunks = (clientId, filePath, targetChunkSizeMB = 10) => {
@@ -130,7 +133,7 @@ const transcribeChunkPrerecorded = async (clientId, chunkPath, diarizeEnabled, m
         if (formattedTranscript.trim().length > 0) {
             sendSseMessage(clientId, 'partial_transcript', { transcript: formattedTranscript });
         }
-        return plainTranscript;
+        return formattedTranscript; // Return the version that may include diarization
     } catch (err) {
         console.error(`[${clientId}] Failed Deepgram transcription for chunk ${chunkName}:`, err);
         sendSseMessage(clientId, 'error', { message: `Deepgram failed on chunk ${chunkName}: ${err.message}` });
@@ -391,9 +394,359 @@ export const handleTranscriptionRequest = async (req, res) => {
     }
 };
 
+
+export const handleChunkedTranscriptionRequest = async (req, res) => {
+    const { clientId, chunkIndex: chunkIndexStr, totalChunks: totalChunksStr, fileName } = req.body;
+    console.log(`[${clientId}] Raw req.body.options at function start for chunk ${chunkIndexStr}:`, req.body.options);
+    const clientOptions = JSON.parse(req.body.options || '{}');
+    const audioChunkFile = req.file;
+
+    if (!audioChunkFile) {
+        return res.status(400).json({ error: 'No audio chunk provided.' });
+    }
+    if (!clientId) {
+        fs.unlink(audioChunkFile.path, (err) => {
+            if (err) console.error(`[UNKNOWN CLIENT] Error deleting orphaned chunk ${audioChunkFile.path}:`, err);
+        });
+        return res.status(400).json({ error: 'Client ID is missing.' });
+    }
+
+    const chunkIndex = parseInt(chunkIndexStr);
+    const totalChunks = parseInt(totalChunksStr);
+
+    console.log(`[${clientId}] Received chunk ${chunkIndex}/${totalChunks - 1} for ${fileName}. Path: ${audioChunkFile.path}`);
+    sendSseMessage(clientId, 'chunk_received', { chunkIndex, totalChunks, fileName, message: `Received chunk ${chunkIndex + 1} of ${totalChunks}` });
+
+    // Helper function to send chunk and clean up
+    const sendChunkToDeepgram = (clientIdForHelper, chunkPath) => {
+        console.log(`[${clientIdForHelper}] sendChunkToDeepgram called for chunk: ${chunkPath}. Checking stream session.`);
+        const clientSession = activeDeepgramLiveStreams[clientIdForHelper];
+        
+        if (!clientSession || !clientSession.stream) {
+            console.error(`[${clientIdForHelper}] No active stream session found for sendChunkToDeepgram for chunk ${path.basename(chunkPath)}.`);
+            throw new Error(`Deepgram stream session not found for client ${clientIdForHelper} when attempting to send chunk ${path.basename(chunkPath)}`);
+        }
+        const stream = clientSession.stream;
+        const streamOptions = clientSession.options;
+
+        console.log(`[${clientIdForHelper}] Stream session found. Stream SDK readyState: ${stream.getReadyState()} for chunk ${path.basename(chunkPath)}.`);
+
+        if (stream.getReadyState() !== 1) { // 1 = OPEN
+            console.error(`[${clientIdForHelper}] Deepgram stream not open (state: ${stream.getReadyState()}) for chunk ${path.basename(chunkPath)}.`);
+            throw new Error(`Deepgram stream not open (state: ${stream.getReadyState()}) when attempting to send chunk ${path.basename(chunkPath)}`);
+        }
+
+        try {
+            const fileBuffer = fs.readFileSync(chunkPath); // Use synchronous read
+            console.log(`[${clientIdForHelper}] Read chunk ${path.basename(chunkPath)} into buffer (${fileBuffer.length} bytes). Preparing to send to Deepgram.`);
+            
+            let bufferToSend = fileBuffer; // MODIFIED: Always send the full fileBuffer (WAV with header)
+            console.log(`[${clientIdForHelper}] Sending full WAV buffer (with header) of size: ${bufferToSend.length}`);
+            
+            // Check stream state again immediately before sending
+            if (stream.getReadyState() === 1) { // 1 = OPEN
+                stream.send(bufferToSend);
+                console.log(`[${clientIdForHelper}] Successfully called send() with ${bufferToSend.length} bytes for chunk ${path.basename(chunkPath)} to Deepgram.`);
+            } else {
+                console.warn(`[${clientIdForHelper}] Stream state changed to ${stream.getReadyState()} just before sending chunk ${path.basename(chunkPath)}. Aborting send.`);
+                throw new Error(`Deepgram stream not open (state: ${stream.getReadyState()}) when attempting to send chunk ${path.basename(chunkPath)}`);
+            }
+
+            // Asynchronously delete the chunk file after sending
+            fs.unlink(chunkPath, (unlinkErr) => {
+                if (unlinkErr) {
+                    console.error(`[${clientIdForHelper}] Error deleting chunk ${chunkPath} after sending:`, unlinkErr);
+                } else {
+                    console.log(`[${clientIdForHelper}] Deleted chunk ${chunkPath} after sending to Deepgram.`);
+                }
+            });
+        } catch (readSendError) {
+            console.error(`[${clientIdForHelper}] Error reading or sending chunk ${path.basename(chunkPath)}:`, readSendError);
+            sendSseMessage(clientIdForHelper, 'error', { message: `Server error processing chunk ${path.basename(chunkPath)}: ${readSendError.message}` });
+            // Attempt to delete chunk even on error, if it exists
+            if (fs.existsSync(chunkPath)) {
+                fs.unlink(chunkPath, (unlinkErr) => {
+                    if (unlinkErr) console.error(`[${clientIdForHelper}] Error deleting chunk ${chunkPath} after read/send error:`, unlinkErr);
+                });
+            }
+            // Propagate the error so the calling function in handleChunkedTranscriptionRequest can react if needed
+            throw readSendError;
+        }
+    };
+
+    try {
+        const deepgramClient = getDeepgramClientInstance();
+        if (!deepgramClient) {
+            throw new Error("Deepgram client not initialized.");
+        }
+
+        if (chunkIndex === 0) { // First chunk
+            if (totalChunks === 1) {
+                // --- SINGLE CHUNK: Use Pre-recorded API ---
+                console.log(`[${clientId}] Single chunk detected (1/${totalChunks}). Using Deepgram Pre-recorded API for file: ${audioChunkFile.path}`);
+                sendSseMessage(clientId, 'status', { message: 'Processing single file with Deepgram Pre-recorded API...' });
+
+                const diarizeEnabledPrerecorded = clientOptions.diarize === true || clientOptions.diarize === 'true' || clientOptions.enableDiarization === true || clientOptions.enableDiarization === 'true';
+                const modelPrerecorded = clientOptions.model || 'nova-2';
+
+                // Clear any potential stale live stream state for this client ID before pre-recorded call
+                if (activeDeepgramLiveStreams[clientId]) delete activeDeepgramLiveStreams[clientId];
+                if (accumulatedTranscripts[clientId]) delete accumulatedTranscripts[clientId];
+                delete isFinalChunkProcessed[clientId];
+
+                (async () => { // IIFE to use await for transcribeChunkPrerecorded
+                    try {
+                        const fullTranscript = await transcribeChunkPrerecorded(clientId, audioChunkFile.path, diarizeEnabledPrerecorded, modelPrerecorded);
+
+                        if (fullTranscript !== null && fullTranscript.trim().length > 0) {
+                            sendSseMessage(clientId, 'finalTranscript', {
+                                fullTranscript: fullTranscript.trim(),
+                                summary: "", // Summarization not part of this direct path for now
+                                message: "Transcription complete (pre-recorded)."
+                            });
+                            console.log(`[${clientId}] Pre-recorded transcription successful. Transcript length: ${fullTranscript.trim().length}`);
+                        } else {
+                            sendSseMessage(clientId, 'finalTranscript', {
+                                fullTranscript: "",
+                                summary: "",
+                                message: "Transcription failed or no speech detected (pre-recorded)."
+                            });
+                            console.log(`[${clientId}] Pre-recorded transcription returned null or empty.`);
+                        }
+                        sendSseMessage(clientId, 'status', { message: 'Pre-recorded transcription finalized.' });
+                        if (!res.headersSent) {
+                           res.json({ message: 'File processed successfully using pre-recorded API.', clientId });
+                        }
+                    } catch (prerecordedError) {
+                        console.error(`[${clientId}] Error during pre-recorded transcription call:`, prerecordedError);
+                        sendSseMessage(clientId, 'error', { message: `Error during pre-recorded transcription: ${prerecordedError.message}` });
+                        sendSseMessage(clientId, 'status', { message: 'Pre-recorded transcription failed.' });
+                        if (!res.headersSent) {
+                            res.status(500).json({ error: `Pre-recorded transcription failed: ${prerecordedError.message}` });
+                        }
+                    } finally {
+                        if (fs.existsSync(audioChunkFile.path)) {
+                            fs.unlink(audioChunkFile.path, (err) => {
+                                if (err) console.error(`[${clientId}] Error deleting chunk ${audioChunkFile.path} after pre-recorded processing:`, err);
+                                else console.log(`[${clientId}] Deleted chunk ${audioChunkFile.path} after pre-recorded processing.`);
+                            });
+                        }
+                        // Clean up any other potential state associated with this client for this specific flow
+                        if (activeDeepgramLiveStreams[clientId]) delete activeDeepgramLiveStreams[clientId];
+                        if (accumulatedTranscripts[clientId]) delete accumulatedTranscripts[clientId];
+                        delete isFinalChunkProcessed[clientId];
+                    }
+                })(); // End of IIFE
+                return; // IMPORTANT: Stop further execution in handleChunkedTranscriptionRequest for single chunk
+
+            } else {
+                // --- MULTIPLE CHUNKS: Use Live Streaming API (existing logic) ---
+                console.log(`[${clientId}] First of ${totalChunks} chunks. Initializing Deepgram Live Stream.`);
+                
+                // Clear any pre-existing stream for this client ID (important for retries/reconnects)
+                if (activeDeepgramLiveStreams[clientId]) {
+                    console.warn(`[${clientId}] Existing Deepgram stream found on first chunk of a multi-chunk stream. Closing old one.`);
+                    try {
+                        if (activeDeepgramLiveStreams[clientId].stream && typeof activeDeepgramLiveStreams[clientId].stream.finish === 'function') {
+                             activeDeepgramLiveStreams[clientId].stream.finish();
+                        }
+                    } catch (e) { console.error(`[${clientId}] Error closing pre-existing stream:`, e); }
+                    delete activeDeepgramLiveStreams[clientId];
+                }
+                if (accumulatedTranscripts[clientId]) delete accumulatedTranscripts[clientId];
+                delete isFinalChunkProcessed[clientId];
+
+                const transcriptionOptions = {
+                    language: clientOptions.language || 'en-US',
+                    model: clientOptions.model || 'nova-2',
+                    interim_results: clientOptions.interim_results !== undefined ? clientOptions.interim_results : true, // Use client's preference or default to true
+                    // For live streaming with WAV, Deepgram might infer, or we can specify if known and reliable
+                    // channels: clientOptions.numberOfChannels, 
+                    // sample_rate: clientOptions.sampleRate,
+                    // encoding: 'linear16', // if we are sure about the format after frontend processing
+                };
+                console.log(`[${clientId}] Using live stream transcriptionOptions:`, JSON.stringify(transcriptionOptions));
+                Object.keys(transcriptionOptions).forEach(key => transcriptionOptions[key] === undefined && delete transcriptionOptions[key]);
+
+                const deepgramLive = deepgramClient.listen.live(transcriptionOptions);
+                activeDeepgramLiveStreams[clientId] = { stream: deepgramLive, options: transcriptionOptions };
+                console.log(`[${clientId}] deepgramLive object CREATED for live stream. Attaching all listeners now.`);
+
+                const setupErrorPromise = new Promise((_, reject) => {
+                    deepgramLive.once('error', (error) => {
+                        console.error(`[${clientId}] Deepgram live stream error during setup:`, error);
+                        sendSseMessage(clientId, 'error', { message: `Deepgram stream setup error: ${error.message || JSON.stringify(error)}` });
+                        if (activeDeepgramLiveStreams[clientId]) delete activeDeepgramLiveStreams[clientId];
+                        reject(error);
+                    });
+                });
+
+                const openPromise = new Promise((resolve) => {
+                    deepgramLive.once('open', () => {
+                        console.log(`[${clientId}] Deepgram live stream opened.`);
+                        sendSseMessage(clientId, 'status', { message: 'Transcription stream started with Deepgram.' });
+                        resolve();
+                    });
+                });
+
+                deepgramLive.on('error', (error) => {
+                    console.error(`[${clientId}] Deepgram live stream operational error:`, error);
+                    sendSseMessage(clientId, 'error', { message: `Deepgram operational error: ${error.message || JSON.stringify(error)}` });
+                    if (activeDeepgramLiveStreams[clientId]?.stream) {
+                        try { activeDeepgramLiveStreams[clientId].stream.finish(); } catch(e){ console.error(`[${clientId}] Error finishing stream on DG op error:`, e); }
+                    }
+                    if (activeDeepgramLiveStreams[clientId]) delete activeDeepgramLiveStreams[clientId];
+                    if (accumulatedTranscripts[clientId]) delete accumulatedTranscripts[clientId];
+                    delete isFinalChunkProcessed[clientId];
+                });
+
+                deepgramLive.on('close', (event) => {
+                    console.log(`[${clientId}] Deepgram live stream closed. Event:`, event);
+                    if (!isFinalChunkProcessed[clientId] && accumulatedTranscripts[clientId]?.fullTranscript && accumulatedTranscripts[clientId].fullTranscript.trim().length > 0) {
+                        sendSseMessage(clientId, 'finalTranscript', {
+                            fullTranscript: accumulatedTranscripts[clientId].fullTranscript.trim(),
+                            summary: "", message: "Final transcript processed upon stream close."
+                        });
+                    } else if (!isFinalChunkProcessed[clientId]) {
+                        sendSseMessage(clientId, 'finalTranscript', {
+                            fullTranscript: "", summary: "",
+                            message: "Transcription complete. No speech detected or stream closed prematurely."
+                        });
+                    }
+                    sendSseMessage(clientId, 'status', { message: 'Deepgram stream closed. Transcription finalized.' });
+                    if (activeDeepgramLiveStreams[clientId]) delete activeDeepgramLiveStreams[clientId];
+                    if (accumulatedTranscripts[clientId]) delete accumulatedTranscripts[clientId];
+                    delete isFinalChunkProcessed[clientId];
+                });
+
+                deepgramLive.on('transcript', (data) => {
+                    const transcript = data.channel?.alternatives[0]?.transcript;
+                    if (transcript && transcript.length > 0) {
+                        if (!accumulatedTranscripts[clientId]) {
+                            accumulatedTranscripts[clientId] = { fullTranscript: "", lastInterimDate: Date.now() };
+                        }
+                        accumulatedTranscripts[clientId].fullTranscript += transcript + " ";
+                        if (data.is_final && data.speech_final) {
+                            isFinalChunkProcessed[clientId] = true;
+                            sendSseMessage(clientId, 'finalTranscript', {
+                                fullTranscript: accumulatedTranscripts[clientId].fullTranscript.trim(),
+                                summary: "", message: "Final transcript received from Deepgram."
+                            });
+                        } else if (data.is_final === false) { 
+                            const now = Date.now();
+                            if (now - (accumulatedTranscripts[clientId].lastInterimDate || 0) > 300) {
+                                sendSseMessage(clientId, 'interimTranscript', {
+                                    interimTranscript: accumulatedTranscripts[clientId].fullTranscript,
+                                    message: "Interim transcript update."
+                                });
+                                accumulatedTranscripts[clientId].lastInterimDate = now;
+                            }
+                        }
+                    }
+                });
+                
+                deepgramLive.on('metadata', (metadata) => { console.log(`[${clientId}] Deepgram 'metadata' event:`, JSON.stringify(metadata, null, 2)); });
+                deepgramLive.on('utteranceend', (utterance) => { console.log(`[${clientId}] Deepgram 'utteranceend' event:`, JSON.stringify(utterance)); });
+
+                Promise.race([setupErrorPromise, openPromise])
+                    .then(() => {
+                        console.log(`[${clientId}] Live stream opened successfully. Sending first chunk.`);
+                        sendChunkToDeepgram(clientId, audioChunkFile.path);
+                        if (!res.headersSent) {
+                            res.json({ message: 'First chunk processed, live stream open and processing.' });
+                        }
+                    })
+                    .catch(err => {
+                        console.error(`[${clientId}] Failed to open Deepgram live stream or setup error:`, err);
+                        if (!res.headersSent) {
+                            res.status(500).json({ error: `Failed to initialize Deepgram live stream: ${err.message}` });
+                        }
+                        if (fs.existsSync(audioChunkFile.path)) {
+                            fs.unlink(audioChunkFile.path, unlinkErr => {
+                                if (unlinkErr) console.error(`[${clientId}] Error deleting chunk ${audioChunkFile.path} after live stream setup failure:`, unlinkErr);
+                            });
+                        }
+                    });
+            } // End of else (totalChunks > 1)
+        } else { // Subsequent chunks
+            const clientSession = activeDeepgramLiveStreams[clientId];
+            if (clientSession && clientSession.stream && clientSession.stream.getReadyState() === 1) { // 1 = OPEN
+                sendChunkToDeepgram(clientId, audioChunkFile.path);
+            } else {
+                console.error(`[${clientId}] No active/open Deepgram stream for subsequent chunk ${chunkIndex}. State: ${clientSession?.stream?.getReadyState()}`);
+                sendSseMessage(clientId, 'error', { message: `Deepgram stream not ready for chunk ${chunkIndex + 1}. Please try restarting.` });
+                // Clean up the current chunk as it won't be processed
+                fs.unlink(audioChunkFile.path, (err) => {
+                    if (err) console.error(`[${clientId}] Error deleting unprocessed chunk ${audioChunkFile.path}:`, err);
+                });
+                return res.status(400).json({ error: 'No active transcription stream. First chunk/connection might have failed.' });
+            }
+        }
+
+        if (chunkIndex === totalChunks - 1) {
+            if (activeDeepgramLiveStreams[clientId]) {
+                console.log(`[${clientId}] All ${totalChunks} chunks processed locally. Preparing to finish Deepgram stream.`);
+                console.log(`[${clientId}] Attempting to call .finish() on Deepgram stream.`);
+                try {
+                    if (activeDeepgramLiveStreams[clientId] && activeDeepgramLiveStreams[clientId].stream) {
+                        activeDeepgramLiveStreams[clientId].stream.finish(); // Tell Deepgram we're done sending audio
+                        console.log(`[${clientId}] Successfully called .finish() on Deepgram stream. Waiting for close/transcript events.`);
+                    } else {
+                        console.error(`[${clientId}] Attempted to finish stream, but client session or stream object was missing.`);
+                        throw new Error('Client session or stream object missing, cannot finish.'); // Propagate to catch block
+                    }
+                } catch (finishError) {
+                    console.error(`[${clientId}] Error synchronously calling .finish() on Deepgram stream:`, finishError);
+                    sendSseMessage(clientId, 'error', { message: `Error calling Deepgram finish: ${finishError.message}` });
+                    if (activeDeepgramLiveStreams[clientId]) {
+                        delete activeDeepgramLiveStreams[clientId];
+                    }
+                    delete accumulatedTranscripts[clientId];
+                    delete isFinalChunkProcessed[clientId];
+                }
+                sendSseMessage(clientId, 'status', { message: 'All chunks sent. Finalizing transcription with Deepgram...' });
+            } else {
+                console.warn(`[${clientId}] Last chunk (index ${chunkIndex}) received, but no active Deepgram stream. Transcription might have failed.`);
+                sendSseMessage(clientId, 'error', { message: 'Processing error: Stream ended before last chunk.' });
+                closeSseConnection(clientId); 
+            }
+        }
+
+        res.status(200).json({ message: `Chunk ${chunkIndex + 1}/${totalChunks} received.` });
+
+    } catch (error) {
+        console.error(`[${clientId}] Error in handleChunkedTranscriptionRequest for chunk ${chunkIndex}:`, error);
+        sendSseMessage(clientId, 'error', { message: `Server error processing chunk: ${error.message}` });
+        if (audioChunkFile && audioChunkFile.path && fs.existsSync(audioChunkFile.path)) {
+            fs.unlink(audioChunkFile.path, (err) => {
+                if (err) console.error(`[${clientId}] Error deleting chunk ${audioChunkFile.path} after main error:`, err);
+            });
+        }
+        // Ensure stream is cleaned up on error
+        if (activeDeepgramLiveStreams[clientId] && activeDeepgramLiveStreams[clientId].stream) {
+            try { activeDeepgramLiveStreams[clientId].stream.finish(); } catch(e){ console.error(`[${clientId}] Error finishing stream on main catch:`, e); }
+            delete activeDeepgramLiveStreams[clientId];
+        }
+        res.status(500).json({ error: `Server error: ${error.message}` });
+    }
+};
+
+
 export const handleCancellationRequest = (req, res) => {
     const clientId = req.params.clientId;
     console.log(`Received cancellation request for ${clientId}`);
+
+    if (activeDeepgramLiveStreams[clientId] && activeDeepgramLiveStreams[clientId].stream) {
+        console.log(`[${clientId}] Cancellation: Found active Deepgram live stream. Closing.`);
+        try {
+            activeDeepgramLiveStreams[clientId].stream.finish(); // Access .stream
+            sendSseMessage(clientId, 'status', { message: 'Transcription cancelled by user. Stream closed.' });
+        } catch (e) {
+            console.error(`[${clientId}] Error finishing stream on cancellation:`, e);
+            sendSseMessage(clientId, 'error', { message: `Error during cancellation: ${e.message}` });
+        }
+        delete activeDeepgramLiveStreams[clientId];
+    }
 
     if (activeProcesses[clientId]) {
         activeProcesses[clientId].forEach(process => {
