@@ -4,17 +4,23 @@ A web application for transcribing audio and video files using different AI mode
 
 ## Features
 
-*   **File Upload:** Accepts various audio and video file formats.
-*   **Transcription Engines:**
-    *   **Deepgram:** Uses Nova-2 or Nova-3 models via the Pre-recorded API. Handles large files via FFMpeg chunking (chunk size selectable: 2, 5, 10 MB).
-    *   **Google Gemini:** Uses `gemini-2.5-pro-exp-03-25` via the Generative AI API (inline data method, current limit ~15MB).
+*   **Transcription Modes:**
+    *   **File-Based Transcription (Pre-recorded API):**
+        *   Upload audio/video files for transcription.
+        *   Supports Deepgram (Nova-2/Nova-3 with FFMpeg chunking for large files) and Google Gemini.
+        *   Accepts various audio and video file formats.
+    *   **Streaming Transcription (Deepgram):**
+        *   **Live Microphone Streaming:** Transcribe audio in real-time directly from the user's microphone.
+        *   **File Streaming:** Upload an audio/video file and have it streamed for transcription.
+        *   Utilizes Deepgram's streaming API.
+*   **Model Selection:** Dropdown to choose between available Deepgram and Gemini models (Note: Streaming currently primarily uses Deepgram).
 *   **Model Selection:** Dropdown to choose between available Deepgram and Gemini models.
 *   **Diarization:** Optional speaker identification (checkbox).
     *   Uses Deepgram's `diarize=true` feature (formats by speaker paragraph).
     *   Uses prompting for Gemini (attempts to label by speaker).
 *   **Summarization:** Optional concise summary generation (checkbox).
     *   Uses Google Gemini API for summarization (either summarizing Deepgram transcript or as part of Gemini transcription prompt).
-*   **Real-time Updates:** Uses Server-Sent Events (SSE) to show processing status and append transcript chunks (for Deepgram) or the full transcript/summary (for Gemini).
+*   **Real-time Updates:** Uses Server-Sent Events (SSE) for pre-recorded mode to show processing status and append transcript chunks (for Deepgram) or the full transcript/summary (for Gemini). WebSocket is used for streaming mode to display live transcript updates.
 *   **Transcript Actions:** Buttons to copy the full output (transcript + summary) or save it as a `.txt` file.
 *   **Reset/Cancel:** Button to reset the form or cancel frontend listening (backend cancellation not implemented).
 *   **Auto-Scroll:** Transcription text area automatically scrolls down.
