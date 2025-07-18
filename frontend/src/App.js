@@ -62,7 +62,7 @@ export default function App() {
   const transcriptionAreaRef = useRef(null);
   const dropAreaRef = useRef(null);
 
-  const backendUrl = 'https://deepgram-backend-upcbdbi5la-uc.a.run.app'; // Or use process.env.REACT_APP_BACKEND_URL
+    const backendUrl = 'http://localhost:5000'; // Or use process.env.REACT_APP_BACKEND_URL
 
   // Determine if the selected model is Gemini
   const isGeminiModel = selectedModel.startsWith('gemini-');
